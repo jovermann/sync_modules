@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 #
-# diff_src.py - diff sources
+# sync_modules.py - sync source modules
 #
 # Copyright (C) 2024-2025 by Johannes Overmann <Johannes.Overmann@joov.de>
 
