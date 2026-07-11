@@ -3,6 +3,9 @@
 # sync_modules.py - sync source modules
 #
 # Copyright (C) 2024-2025 by Johannes Overmann <Johannes.Overmann@joov.de>
+#
+# Distributed under the Boost Software License, Version 1.0.
+# (See accompanying file LICENSE or copy at https://www.boost.org/LICENSE_1_0.txt)
 
 import argparse
 import os
@@ -234,6 +237,8 @@ def main():
     parser.add_argument("--pull", help="Run git pull --rebase on involved repos.", action="store_true")
     parser.add_argument("--push", help="Run git push on involved repos.", action="store_true")
     parser.add_argument("--commit", help="Run git commit -a using the git editor message.", action="store_true")
+    parser.add_argument("--git-diff", help="Run git diff in involved repos.", action="store_true")
+    parser.add_argument("--git-status", help="Run git status in involved repos.", action="store_true")
     parser.add_argument("--no-git-check", help="Disable git repo cleanliness check.", action="store_true")
     parser.add_argument("-V", "--verbose", help="Be more verbose. May be specified multiple times.", action="count", default=0) # -v is taken by --version, argh!
     options = parser.parse_args()
@@ -322,6 +327,28 @@ def main():
                     for file in files:
                         print(f"diff -u {file.path} {entry['newest'].path}")
                     printDiff(files[0], entry["newest"])
+
+        if options.git_diff:
+            repo_roots = getRepoRootsFromFiles(involved_files)
+            for repo_root in repo_roots:
+                print(f"Running git diff in {repo_root}")
+                subprocess.run(["git", "-C", repo_root, "--no-pager", "diff"])
+
+        if options.git_status:
+            repo_roots = getRepoRootsFromFiles(involved_files)
+            for repo_root in repo_roots:
+                print(f"Running git status in {repo_root}")
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        repo_root,
+                        "status",
+                        "--short",
+                        "--branch",
+                        "--untracked-files=no",
+                    ]
+                )
 
         if options.pull or options.push or options.commit:
             repo_roots = getRepoRootsFromFiles(involved_files)
