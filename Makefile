@@ -6,6 +6,19 @@ BUILD := $(WORKSPACE)/build.py
 
 SYNC_MODULES_OPTS = $(WORKSPACE) -e streplace_0.9 -e old
 
+.PHONY: default diff sync commit pull push status git_diff build
+
+default:
+	@echo "Targets:"
+	@echo "  diff      Show differences between synchronized module copies."
+	@echo "  sync      Copy the newest module versions to matching older copies."
+	@echo "  commit    Commit synchronized module changes in affected repositories."
+	@echo "  pull      Pull affected repositories."
+	@echo "  push      Push affected repositories."
+	@echo "  status    Show git status for affected repositories."
+	@echo "  git_diff  Show git diffs for affected repositories."
+	@echo "  build     Run the workspace build script."
+
 diff:
 	$(SYNC_MODULES) $(SYNC_MODULES_OPTS) --diff
 
