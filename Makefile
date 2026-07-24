@@ -4,9 +4,12 @@ WORKSPACE := $(abspath $(REPO_DIR)/..)
 SYNC_MODULES := $(REPO_DIR)/sync_modules.py
 BUILD := $(WORKSPACE)/build.py
 
-SYNC_MODULES_OPTS = $(WORKSPACE) -e streplace_0.9 -e old
+SYNC_MODULES_OPTS = $(WORKSPACE) -e streplace_0.9 -e old -e other
+RELEVANT_DIRS = $(sort $(patsubst $(WORKSPACE)/%/src/,%,$(dir $(wildcard $(WORKSPACE)/*/src/*.cpp))))
+GIT_DIRS = $(sort $(RELEVANT_DIRS) sync_modules)
+GIT_MODULES_OPTS = $(GIT_DIRS:%=$(WORKSPACE)/%) -e streplace_0.9 -x c,h,cpp,hpp,cxx,hxx,py,sh
 
-.PHONY: default diff sync commit pull push status git_diff build
+.PHONY: default diff sync commit pull push status git_diff build unit_test clean FORCE
 
 default:
 	@echo "Targets:"
@@ -18,6 +21,8 @@ default:
 	@echo "  status    Show git status for affected repositories."
 	@echo "  git_diff  Show git diffs for affected repositories."
 	@echo "  build     Run the workspace build script."
+	@echo "  unit_test Build and run unit tests in all relevant repositories."
+	@echo "  clean     Clean builds in all relevant repositories."
 
 diff:
 	$(SYNC_MODULES) $(SYNC_MODULES_OPTS) --diff
@@ -26,19 +31,31 @@ sync:
 	$(SYNC_MODULES) $(SYNC_MODULES_OPTS) --sync
 
 commit:
-	$(SYNC_MODULES) $(SYNC_MODULES_OPTS) --commit
+	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --commit
 
 pull:
-	$(SYNC_MODULES) $(SYNC_MODULES_OPTS) --pull
+	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --pull
 
 push:
-	$(SYNC_MODULES) $(SYNC_MODULES_OPTS) --push
+	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --push
 
 status:
-	$(SYNC_MODULES) $(SYNC_MODULES_OPTS) --git-status
+	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --git-status
 
 git_diff:
-	$(SYNC_MODULES) $(SYNC_MODULES_OPTS) --git-diff
+	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --git-diff
 
 build:
 	$(BUILD) -e wifi-sniffer -e old
+
+unit_test: $(RELEVANT_DIRS:%=unit_test-%)
+
+unit_test-%: FORCE
+	$(MAKE) -C $(WORKSPACE)/$* unit_test
+
+clean: $(RELEVANT_DIRS:%=clean-%)
+
+clean-%: FORCE
+	$(MAKE) -C $(WORKSPACE)/$* clean
+
+FORCE:

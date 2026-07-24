@@ -26,14 +26,20 @@ esac
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_name=$(basename -- "$script_dir")
 parent_dir=$(dirname -- "$script_dir")
-link_path=$parent_dir/Makefile
-link_target=$repo_name/Makefile
 
-if [ -e "$link_path" ] && [ ! -L "$link_path" ] && [ "$force" -ne 1 ]; then
-    echo "Refusing to replace existing regular file: $link_path" >&2
-    echo "Run with --force to replace it." >&2
-    exit 1
-fi
+install_link() {
+    link_path=$1
+    link_target=$2
 
-ln -sfn -- "$link_target" "$link_path"
-echo "$link_path -> $link_target"
+    if [ -e "$link_path" ] && [ ! -L "$link_path" ] && [ "$force" -ne 1 ]; then
+        echo "Refusing to replace existing regular file: $link_path" >&2
+        echo "Run with --force to replace it." >&2
+        exit 1
+    fi
+
+    ln -sfn -- "$link_target" "$link_path"
+    echo "$link_path -> $link_target"
+}
+
+install_link "$parent_dir/Makefile" "$repo_name/Makefile"
+install_link "$parent_dir/git_clone.sh" "$repo_name/git_clone.py"
