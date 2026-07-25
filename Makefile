@@ -4,10 +4,10 @@ WORKSPACE := $(abspath $(REPO_DIR)/..)
 SYNC_MODULES := $(REPO_DIR)/sync_modules.py
 BUILD := $(WORKSPACE)/build.py
 
-SYNC_MODULES_OPTS = $(WORKSPACE) -e streplace_0.9 -e old -e other
+SYNC_MODULES_OPTS = $(WORKSPACE) -e streplace_0.9 -e old -e other -e test_basic.py
 RELEVANT_DIRS = $(sort $(patsubst $(WORKSPACE)/%/src/,%,$(dir $(wildcard $(WORKSPACE)/*/src/*.cpp))))
 GIT_DIRS = $(sort $(RELEVANT_DIRS) sync_modules)
-GIT_MODULES_OPTS = $(GIT_DIRS:%=$(WORKSPACE)/%) -e streplace_0.9 -x c,h,cpp,hpp,cxx,hxx,py,sh
+GIT_MODULES_OPTS = $(GIT_DIRS:%=$(WORKSPACE)/%) -e streplace_0.9 -e test_basic.py -x c,h,cpp,hpp,cxx,hxx,py,sh
 
 .PHONY: default diff sync commit pull push status git_diff build unit_test clean FORCE
 
