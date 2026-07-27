@@ -2,14 +2,16 @@ MAKEFILE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 REPO_DIR := $(if $(wildcard $(MAKEFILE_DIR)/sync_modules.py),$(MAKEFILE_DIR),$(MAKEFILE_DIR)/sync_modules)
 WORKSPACE := $(abspath $(REPO_DIR)/..)
 SYNC_MODULES := $(REPO_DIR)/sync_modules.py
+GIT_CLONE := $(REPO_DIR)/git_clone.py
 BUILD := $(WORKSPACE)/build.py
 
 SYNC_MODULES_OPTS = $(WORKSPACE) -e streplace_0.9 -e old -e other -e test_basic.py
-RELEVANT_DIRS = $(sort $(patsubst $(WORKSPACE)/%/src/,%,$(dir $(wildcard $(WORKSPACE)/*/src/*.cpp))))
-GIT_DIRS = $(sort $(RELEVANT_DIRS) sync_modules)
+CPP_PROJECTS = $(shell $(SYNC_MODULES) --list-cpp-projects)
+RELEVANT_DIRS = $(sort $(CPP_PROJECTS))
+GIT_DIRS = $(sort $(CPP_PROJECTS) sync_modules)
 GIT_MODULES_OPTS = $(GIT_DIRS:%=$(WORKSPACE)/%) -e streplace_0.9 -e test_basic.py -x c,h,cpp,hpp,cxx,hxx,py,sh
 
-.PHONY: default diff sync commit pull push status git_diff build unit_test clean FORCE
+.PHONY: default diff sync commit pull push status git_diff clone_all build unit_test clean FORCE
 
 default:
 	@echo "Targets:"
@@ -20,6 +22,7 @@ default:
 	@echo "  push      Push affected repositories."
 	@echo "  status    Show git status for affected repositories."
 	@echo "  git_diff  Show git diffs for affected repositories."
+	@echo "  clone_all Clone all missing C++ project repositories."
 	@echo "  build     Run the workspace build script."
 	@echo "  unit_test Build and run unit tests in all relevant repositories."
 	@echo "  clean     Clean builds in all relevant repositories."
@@ -44,6 +47,11 @@ status:
 
 git_diff:
 	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --git-diff
+
+clone_all: $(CPP_PROJECTS:%=clone-%)
+
+clone-%: FORCE
+	$(GIT_CLONE) -C $(WORKSPACE) $*
 
 build:
 	$(BUILD) -e wifi-sniffer -e old

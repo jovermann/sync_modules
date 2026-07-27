@@ -21,6 +21,7 @@ import tempfile
 extensions = ""
 filter = ""
 exclude = []
+configPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sync_modules.toml")
 
 class File:
     """Path, basename and content of an existing file in the filesystem.
@@ -219,6 +220,37 @@ def checkGitCleanForFile(file):
         return (False, f"File '{file.path}' has local changes.")
     return (True, "")
 
+def readConfig(path):
+    """Read the sync_modules TOML config.
+    """
+    try:
+        import tomllib
+        with open(path, "rb") as file:
+            return tomllib.load(file)
+    except ModuleNotFoundError:
+        pass
+
+    import ast
+    with open(path, "r", encoding="utf-8") as file:
+        text = file.read()
+    section = re.search(r"(?ms)^\[cpp\]\s*(.*?)(?=^\[|\Z)", text)
+    projects = re.search(r"(?ms)^projects\s*=\s*(\[[^\]]*\])", section.group(1) if section else "")
+    if not projects:
+        raise RuntimeError(f"Missing [cpp].projects in {path}")
+    return {"cpp": {"projects": ast.literal_eval(projects.group(1))}}
+
+def getCppProjects(path):
+    """Return C++ projects from the sync_modules config.
+    """
+    config = readConfig(path)
+    try:
+        projects = config["cpp"]["projects"]
+    except KeyError:
+        raise RuntimeError(f"Missing [cpp].projects in {path}")
+    if not isinstance(projects, list) or not all(isinstance(project, str) for project in projects):
+        raise RuntimeError(f"[cpp].projects must be a list of strings in {path}")
+    return projects
+
 
 def main():
     """Main function of this module.
@@ -239,9 +271,15 @@ def main():
     parser.add_argument("--commit", help="Run git commit -a using the git editor message.", action="store_true")
     parser.add_argument("--git-diff", help="Run git diff in involved repos.", action="store_true")
     parser.add_argument("--git-status", help="Run git status in involved repos.", action="store_true")
+    parser.add_argument("--list-cpp-projects", help="List configured C++ projects.", action="store_true")
+    parser.add_argument("--config", help="Path to sync_modules.toml.", type=str, default=configPath)
     parser.add_argument("--no-git-check", help="Disable git repo cleanliness check.", action="store_true")
     parser.add_argument("-V", "--verbose", help="Be more verbose. May be specified multiple times.", action="count", default=0) # -v is taken by --version, argh!
     options = parser.parse_args()
+
+    if options.list_cpp_projects:
+        print(" ".join(getCppProjects(options.config)))
+        return
 
     extensions = options.extensions.split(',')
     filter = options.filter
