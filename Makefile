@@ -3,13 +3,13 @@ REPO_DIR := $(if $(wildcard $(MAKEFILE_DIR)/sync_modules.py),$(MAKEFILE_DIR),$(M
 WORKSPACE := $(abspath $(REPO_DIR)/..)
 SYNC_MODULES := $(REPO_DIR)/sync_modules.py
 GIT_CLONE := $(REPO_DIR)/git_clone.py
-BUILD := $(WORKSPACE)/build.py
 
 SYNC_MODULES_OPTS = $(WORKSPACE) -e streplace_0.9 -e old -e other -e test_basic.py
 CPP_PROJECTS = $(shell $(SYNC_MODULES) --list-cpp-projects)
 RELEVANT_DIRS = $(sort $(CPP_PROJECTS))
 GIT_DIRS = $(sort $(CPP_PROJECTS) sync_modules)
 GIT_MODULES_OPTS = $(GIT_DIRS:%=$(WORKSPACE)/%) -e streplace_0.9 -e test_basic.py -x c,h,cpp,hpp,cxx,hxx,py,sh
+N ?= $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
 
 .PHONY: default diff sync commit pull push status git_diff clone_all build unit_test clean FORCE
 
@@ -23,7 +23,7 @@ default:
 	@echo "  status    Show git status for affected repositories."
 	@echo "  git_diff  Show git diffs for affected repositories."
 	@echo "  clone_all Clone all missing C++ project repositories."
-	@echo "  build     Run the workspace build script."
+	@echo "  build     Build all relevant repositories."
 	@echo "  unit_test Build and run unit tests in all relevant repositories."
 	@echo "  clean     Clean builds in all relevant repositories."
 
@@ -54,16 +54,19 @@ clone-%: FORCE
 	$(GIT_CLONE) -C $(WORKSPACE) $*
 
 build:
-	$(BUILD) -e wifi-sniffer -e old
+	$(MAKE) -j $(N) $(RELEVANT_DIRS:%=build-%)
+
+build-%: FORCE
+	$(MAKE) -C $(WORKSPACE)/$*
 
 unit_test: $(RELEVANT_DIRS:%=unit_test-%)
 
 unit_test-%: FORCE
-	$(MAKE) -C $(WORKSPACE)/$* unit_test
+	$(MAKE) -j $(N) -C $(WORKSPACE)/$* unit_test
 
 clean: $(RELEVANT_DIRS:%=clean-%)
 
 clean-%: FORCE
-	$(MAKE) -C $(WORKSPACE)/$* clean
+	$(MAKE) -j $(N) -C $(WORKSPACE)/$* clean
 
 FORCE:
