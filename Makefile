@@ -8,8 +8,8 @@ CPP_PROJECTS = $(shell $(SYNC_MODULES) --list-cpp-projects --workspace $(WORKSPA
 GIT_PROJECTS = $(shell $(SYNC_MODULES) --list-git-projects --workspace $(WORKSPACE))
 RELEVANT_DIRS = $(sort $(CPP_PROJECTS))
 GIT_DIRS = $(sort $(GIT_PROJECTS))
-SYNC_MODULES_OPTS = $(CPP_PROJECTS:%=$(WORKSPACE)/%) -e streplace_0.9 -e old -e other -e test_basic.py
-GIT_MODULES_OPTS = $(GIT_DIRS:%=$(WORKSPACE)/%) -e streplace_0.9 -e test_basic.py -x c,h,cpp,hpp,cxx,hxx,py,sh
+SYNC_MODULES_OPTS = $(CPP_PROJECTS:%=$(WORKSPACE)/%) -e streplace_0.9 -e old -e other -e test_basic.py -e keep
+GIT_MODULES_OPTS = $(GIT_DIRS:%=$(WORKSPACE)/%) -e streplace_0.9 -e test_basic.py -e keep -x c,h,cpp,hpp,cxx,hxx,py,sh
 N ?= $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
 
 .PHONY: default diff sync commit pull push status git_diff clone_all build unit_test clean FORCE
