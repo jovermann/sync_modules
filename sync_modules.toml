@@ -1,8 +1,0 @@
-[cpp]
-projects = [
-  "leancrypt",
-  "scanbadblocks",
-  "streplace",
-  "treeop",
-  "treesync",
-]
