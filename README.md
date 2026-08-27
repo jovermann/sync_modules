@@ -28,6 +28,11 @@ Create a new GitHub project and clone it into the current workspace:
 sync_modules/git_new.py my_new_tool
 ```
 
+The new repository's initial branch is configured to track the matching branch
+on `origin`, including when the remote repository is still empty. After the
+first commit, a plain `git push` creates and updates the remote branch; no
+initial `--set-upstream` option is needed.
+
 Before creating a repository, use `-l` / `--list-existing-projects`
 to search for existing GitHub projects with a candidate name:
 

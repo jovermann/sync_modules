@@ -141,6 +141,36 @@ def makeFullName(project, owner):
     return project
 
 
+def configureUpstream(clone_dir, remote_name, dry_run=False):
+    """Configure the initial branch to track its same-named remote branch.
+
+    A newly cloned empty repository has no remote branch yet, so
+    ``git branch --set-upstream-to`` cannot be used.  Setting the underlying
+    branch configuration works before the first commit and makes a plain
+    ``git push`` behave like the initial ``git push --set-upstream``.
+    """
+    branch = "main"
+    if not dry_run:
+        result = run(
+            ["git", "-C", clone_dir, "symbolic-ref", "--short", "HEAD"],
+            capture=True,
+        )
+        branch = result.stdout.strip()
+        if not branch:
+            raise RuntimeError(f"Cannot determine the initial branch in '{clone_dir}'.")
+
+    run(
+        ["git", "config", f"branch.{branch}.remote", remote_name],
+        cwd=clone_dir,
+        dry_run=dry_run,
+    )
+    run(
+        ["git", "config", f"branch.{branch}.merge", f"refs/heads/{branch}"],
+        cwd=clone_dir,
+        dry_run=dry_run,
+    )
+
+
 def createRepository(options):
     """Create the remote repository and clone it locally."""
     work_dir = os.path.abspath(options.directory)
@@ -198,6 +228,11 @@ def createRepository(options):
         printCommand(command, cwd=work_dir)
 
     run(command, cwd=work_dir, dry_run=options.dry_run)
+    configureUpstream(
+        clone_dir,
+        options.remote if options.remote else "origin",
+        dry_run=options.dry_run,
+    )
 
 
 def listExistingProjects(options):
