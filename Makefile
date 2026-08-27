@@ -4,9 +4,10 @@ WORKSPACE := $(abspath $(REPO_DIR)/..)
 SYNC_MODULES := $(REPO_DIR)/sync_modules.py
 GIT_CLONE := $(REPO_DIR)/git_clone.py
 
-CPP_PROJECTS = $(shell $(SYNC_MODULES) --list-cpp-projects --cpp-workspace $(WORKSPACE))
+CPP_PROJECTS = $(shell $(SYNC_MODULES) --list-cpp-projects --workspace $(WORKSPACE))
+GIT_PROJECTS = $(shell $(SYNC_MODULES) --list-git-projects --workspace $(WORKSPACE))
 RELEVANT_DIRS = $(sort $(CPP_PROJECTS))
-GIT_DIRS = $(sort $(CPP_PROJECTS) sync_modules)
+GIT_DIRS = $(sort $(GIT_PROJECTS))
 SYNC_MODULES_OPTS = $(CPP_PROJECTS:%=$(WORKSPACE)/%) -e streplace_0.9 -e old -e other -e test_basic.py
 GIT_MODULES_OPTS = $(GIT_DIRS:%=$(WORKSPACE)/%) -e streplace_0.9 -e test_basic.py -x c,h,cpp,hpp,cxx,hxx,py,sh
 N ?= $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
@@ -43,7 +44,7 @@ push:
 	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --push
 
 status:
-	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --git-status
+	$(SYNC_MODULES) --workspace $(WORKSPACE) -e streplace_0.9 -e old -e other -e test_basic.py --status --no-git-check
 
 git_diff:
 	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --git-diff

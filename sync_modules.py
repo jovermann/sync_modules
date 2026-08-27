@@ -160,6 +160,21 @@ def getRepoRootsFromFiles(files):
             roots.add(root)
     return sorted(roots)
 
+def getRepoRootsFromPaths(paths):
+    """Return sorted unique repo roots containing the supplied paths."""
+    roots = set()
+    for path in paths:
+        probe = path if os.path.isdir(path) else os.path.dirname(path)
+        result = subprocess.run(
+            ["git", "-C", probe, "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.returncode == 0:
+            roots.add(result.stdout.strip())
+    return sorted(roots)
+
 def repoHasModifications(repo_root):
     """Return True if repo has tracked changes (staged or unstaged), ignoring untracked files."""
     status = subprocess.run(
@@ -251,6 +266,23 @@ def getCppProjects(workspace):
             projects.append(child.name)
     return projects
 
+def getGitProjects(workspace):
+    """Return relative paths of all Git repositories below workspace."""
+    projects = []
+    if not os.path.isdir(workspace):
+        raise RuntimeError(f"Cannot scan Git workspace '{workspace}': not a directory")
+    try:
+        walker = os.walk(workspace)
+        for path, dirs, files in walker:
+            if path != workspace and (".git" in dirs or ".git" in files):
+                projects.append(os.path.relpath(path, workspace))
+                dirs[:] = []
+                continue
+            dirs[:] = [name for name in dirs if name != ".git"]
+    except OSError as e:
+        raise RuntimeError(f"Cannot scan Git workspace '{workspace}': {e}")
+    return sorted(projects)
+
 
 def main():
     """Main function of this module.
@@ -271,8 +303,11 @@ def main():
     parser.add_argument("--commit", help="Run git commit -a using the git editor message.", action="store_true")
     parser.add_argument("--git-diff", help="Run git diff in involved repos.", action="store_true")
     parser.add_argument("--git-status", help="Run git status in involved repos.", action="store_true")
+    parser.add_argument("--status", help="Show sync sources and status of all workspace Git repositories.", action="store_true")
+    parser.add_argument("--show-sync-sources", help="Show files that --sync would copy from.", action="store_true")
     parser.add_argument("--list-cpp-projects", help="List discovered C++ projects.", action="store_true")
-    parser.add_argument("--cpp-workspace", help="Workspace whose child projects are scanned.", type=str, default=defaultWorkspace)
+    parser.add_argument("--list-git-projects", help="List all Git repositories below the workspace.", action="store_true")
+    parser.add_argument("--workspace", "--cpp-workspace", dest="cpp_workspace", help="Workspace whose projects are scanned.", type=str, default=defaultWorkspace)
     parser.add_argument("--no-git-check", help="Disable git repo cleanliness check.", action="store_true")
     parser.add_argument("-V", "--verbose", help="Be more verbose. May be specified multiple times.", action="count", default=0) # -v is taken by --version, argh!
     options = parser.parse_args()
@@ -283,6 +318,24 @@ def main():
         except RuntimeError as e:
             parser.error(str(e))
         return
+
+    if options.list_git_projects:
+        try:
+            print(" ".join(getGitProjects(options.cpp_workspace)))
+        except RuntimeError as e:
+            parser.error(str(e))
+        return
+
+    if options.status:
+        try:
+            options.args = [
+                os.path.join(options.cpp_workspace, project)
+                for project in getCppProjects(options.cpp_workspace)
+            ]
+        except RuntimeError as e:
+            parser.error(str(e))
+        options.show_sync_sources = True
+        options.git_status = True
 
     extensions = options.extensions.split(',')
     filter = options.filter
@@ -354,7 +407,11 @@ def main():
                 for file in files:
                     mtime = os.path.getmtime(file.path)
                     date = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                    print(f"    hash={hash_prefixes[file.hash]} len={len(file.content):6d} date={date} {file.path}")
+                    sync_source = " (sync-source)" if file.path == entry["newest"].path else ""
+                    print(f"    hash={hash_prefixes[file.hash]} len={len(file.content):6d} date={date} {file.path}{sync_source}")
+
+        if options.show_sync_sources and not variant_sets:
+            print("All shared files are in sync; make sync would copy nothing.")
 
         if options.diff:
             for entry in variant_sets:
@@ -370,13 +427,20 @@ def main():
                     printDiff(files[0], entry["newest"])
 
         if options.git_diff:
-            repo_roots = getRepoRootsFromFiles(involved_files)
+            repo_roots = sorted(set(getRepoRootsFromFiles(involved_files) + getRepoRootsFromPaths(options.args)))
             for repo_root in repo_roots:
                 print(f"Running git diff in {repo_root}")
                 subprocess.run(["git", "-C", repo_root, "--no-pager", "diff"])
 
         if options.git_status:
-            repo_roots = getRepoRootsFromFiles(involved_files)
+            if options.status:
+                git_paths = [
+                    os.path.join(options.cpp_workspace, project)
+                    for project in getGitProjects(options.cpp_workspace)
+                ]
+                repo_roots = getRepoRootsFromPaths(git_paths)
+            else:
+                repo_roots = sorted(set(getRepoRootsFromFiles(involved_files) + getRepoRootsFromPaths(options.args)))
             for repo_root in repo_roots:
                 print(f"Running git status in {repo_root}")
                 subprocess.run(
@@ -392,7 +456,7 @@ def main():
                 )
 
         if options.pull or options.push or options.commit:
-            repo_roots = getRepoRootsFromFiles(involved_files)
+            repo_roots = sorted(set(getRepoRootsFromFiles(involved_files) + getRepoRootsFromPaths(options.args)))
             commit_message_file = None
             commit_message = ""
             first_commit_done = False
