@@ -44,7 +44,7 @@ push:
 	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --push
 
 status:
-	$(SYNC_MODULES) --workspace $(WORKSPACE) -e streplace_0.9 -e old -e other -e test_basic.py --status --no-git-check
+	$(SYNC_MODULES) $(SYNC_MODULES_OPTS) --workspace $(WORKSPACE) --status --no-git-check
 
 git_diff:
 	$(SYNC_MODULES) $(GIT_MODULES_OPTS) --git-diff

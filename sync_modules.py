@@ -327,13 +327,6 @@ def main():
         return
 
     if options.status:
-        try:
-            options.args = [
-                os.path.join(options.cpp_workspace, project)
-                for project in getCppProjects(options.cpp_workspace)
-            ]
-        except RuntimeError as e:
-            parser.error(str(e))
         options.show_sync_sources = True
         options.git_status = True
 
