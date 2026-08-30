@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 #
-# sync_modules.py - sync source modules
+# sync_modules.py - synchronize shared source modules and maintain their projects
 #
 # Copyright (C) 2024-2025 by Johannes Overmann <Johannes.Overmann@joov.de>
 #
@@ -8,20 +8,39 @@
 # (See accompanying file LICENSE or copy at https://www.boost.org/LICENSE_1_0.txt)
 
 import argparse
+import concurrent.futures
 import os
 import re
 import datetime
 import hashlib
+import importlib.util
 import difflib
 import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_CONFIG = Path.home() / ".sync_modules.toml"
+
+# Load the local copy explicitly, avoiding a similarly named third-party
+# package from the Python environment. sync_modules.py keeps this copy in sync
+# with the other shared-module copies.
+TOML_PATH = SCRIPT_DIR / "toml.py"
+TOML_SPEC = importlib.util.spec_from_file_location("netview_toml", TOML_PATH)
+if TOML_SPEC is None or TOML_SPEC.loader is None:
+    raise SystemExit(f"Cannot load shared TOML module at {TOML_PATH}")
+toml = importlib.util.module_from_spec(TOML_SPEC)
+try:
+    TOML_SPEC.loader.exec_module(toml)
+except FileNotFoundError as exc:
+    raise SystemExit(f"Cannot find shared TOML module at {TOML_PATH}") from exc
 
 extensions = ""
 filter = ""
 exclude = []
-defaultWorkspace = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+defaultWorkspace = str(SCRIPT_DIR.parent)
 
 class File:
     """Path, basename and content of an existing file in the filesystem.
@@ -235,102 +254,45 @@ def checkGitCleanForFile(file):
         return (False, f"File '{file.path}' has local changes.")
     return (True, "")
 
-def getCppProjects(workspace):
-    """Return child projects containing a CommandLineParser module.
-
-    A project is an immediate child directory of the workspace.  Looking for the
-    module itself (rather than references in generated files) keeps discovery
-    deterministic and identifies exactly the projects sync_modules can sync.
-    """
-    module_names = {
-        "CommandLineParser.c", "CommandLineParser.cc", "CommandLineParser.cpp",
-        "CommandLineParser.cxx", "CommandLineParser.h", "CommandLineParser.hpp",
-        "CommandLineParser.hxx",
-    }
-    ignored_dirs = {".git", ".svn", "build", "old", "other"}
+def getProjects(workspace, accepted_extensions, excluded_names):
+    """Return immediate child projects containing accepted source files."""
     projects = []
+    accepted_extensions = {extension.lstrip(".") for extension in accepted_extensions}
+    ignored = {".git", ".svn", "__pycache__", "build", *excluded_names}
     try:
         children = sorted(os.scandir(workspace), key=lambda entry: entry.name)
     except OSError as e:
-        raise RuntimeError(f"Cannot scan C++ workspace '{workspace}': {e}")
+        raise RuntimeError(f"Cannot scan workspace '{workspace}': {e}")
     for child in children:
-        if not child.is_dir(follow_symlinks=True) or child.name.startswith("."):
+        if (
+            not child.is_dir(follow_symlinks=True)
+            or child.name.startswith(".")
+            or child.name in ignored
+        ):
             continue
         found = False
         for _, dirs, files in os.walk(child.path):
-            dirs[:] = [name for name in dirs if name not in ignored_dirs and not name.startswith(".")]
-            if any(name in module_names for name in files):
+            dirs[:] = [name for name in dirs if name not in ignored and not name.startswith(".")]
+            if any(
+                name not in ignored
+                and os.path.splitext(name)[1].lstrip(".") in accepted_extensions
+                for name in files
+            ):
                 found = True
                 break
         if found:
             projects.append(child.name)
     return projects
 
-def getGitProjects(workspace):
-    """Return relative paths of all Git repositories below workspace."""
-    projects = []
-    if not os.path.isdir(workspace):
-        raise RuntimeError(f"Cannot scan Git workspace '{workspace}': not a directory")
-    try:
-        walker = os.walk(workspace)
-        for path, dirs, files in walker:
-            if path != workspace and (".git" in dirs or ".git" in files):
-                projects.append(os.path.relpath(path, workspace))
-                dirs[:] = []
-                continue
-            dirs[:] = [name for name in dirs if name != ".git"]
-    except OSError as e:
-        raise RuntimeError(f"Cannot scan Git workspace '{workspace}': {e}")
-    return sorted(projects)
 
-
-def main():
-    """Main function of this module.
-    """
+def runSyncOperation(options):
+    """Compare, synchronize, or run a Git operation on selected paths."""
     global extensions, filter, exclude
-    usage = """Usage: %(prog)s [OPTIONS] DIRS... FILES...
-    """
-    version = "0.0.1"
-    parser = argparse.ArgumentParser(usage = usage + "\n(Version " + version + ")\n")
-    parser.add_argument("args", nargs="*", help="Dirs and files to process.")
-    parser.add_argument("-x", "--extensions", help="Specify valid source file extensions.", type=str, default="c,h,cpp,hpp,cxx,hxx")
-    parser.add_argument("-f", "--filter", help="Filter all filenames using this regex.", type=str, default="")
-    parser.add_argument("-e", "--exclude", help="Ignore dirs and/or files. May be specified multiple times.", default=[], action="append")
-    parser.add_argument("-d", "--diff", help="Print diff.", action="store_true")
-    parser.add_argument("-s", "--sync", help="Synchronize files automatically.", action="store_true")
-    parser.add_argument("--pull", help="Run git pull --rebase on involved repos.", action="store_true")
-    parser.add_argument("--push", help="Run git push on involved repos.", action="store_true")
-    parser.add_argument("--commit", help="Run git commit -a using the git editor message.", action="store_true")
-    parser.add_argument("--git-diff", help="Run git diff in involved repos.", action="store_true")
-    parser.add_argument("--git-status", help="Run git status in involved repos.", action="store_true")
-    parser.add_argument("--status", help="Show sync sources and status of all workspace Git repositories.", action="store_true")
-    parser.add_argument("--show-sync-sources", help="Show files that --sync would copy from.", action="store_true")
-    parser.add_argument("--list-cpp-projects", help="List discovered C++ projects.", action="store_true")
-    parser.add_argument("--list-git-projects", help="List all Git repositories below the workspace.", action="store_true")
-    parser.add_argument("--workspace", "--cpp-workspace", dest="cpp_workspace", help="Workspace whose projects are scanned.", type=str, default=defaultWorkspace)
-    parser.add_argument("--no-git-check", help="Disable git repo cleanliness check.", action="store_true")
-    parser.add_argument("-V", "--verbose", help="Be more verbose. May be specified multiple times.", action="count", default=0) # -v is taken by --version, argh!
-    options = parser.parse_args()
-
-    if options.list_cpp_projects:
-        try:
-            print(" ".join(getCppProjects(options.cpp_workspace)))
-        except RuntimeError as e:
-            parser.error(str(e))
-        return
-
-    if options.list_git_projects:
-        try:
-            print(" ".join(getGitProjects(options.cpp_workspace)))
-        except RuntimeError as e:
-            parser.error(str(e))
-        return
-
     if options.status:
         options.show_sync_sources = True
         options.git_status = True
 
-    extensions = options.extensions.split(',')
+    extensions = options.extensions
     filter = options.filter
     exclude = options.exclude
 
@@ -341,7 +303,9 @@ def main():
             if not os.path.exists(path):
                 print("Error: Path '{}' does not exist.\n".format(path))
             elif os.path.isfile(path):
-                addFile(fileListAll, path)
+                # Explicit files are intentional synchronization inputs and do
+                # not need to match the directory extension filter.
+                fileListAll.append(File(path))
             elif os.path.isdir(path):
                 addDir(fileListAll, path)
             else:
@@ -404,7 +368,7 @@ def main():
                     print(f"    hash={hash_prefixes[file.hash]} len={len(file.content):6d} date={date} {file.path}{sync_source}")
 
         if options.show_sync_sources and not variant_sets:
-            print("All shared files are in sync; make sync would copy nothing.")
+            print("All shared files are in sync; sync_modules.py sync would copy nothing.")
 
         if options.diff:
             for entry in variant_sets:
@@ -426,14 +390,7 @@ def main():
                 subprocess.run(["git", "-C", repo_root, "--no-pager", "diff"])
 
         if options.git_status:
-            if options.status:
-                git_paths = [
-                    os.path.join(options.cpp_workspace, project)
-                    for project in getGitProjects(options.cpp_workspace)
-                ]
-                repo_roots = getRepoRootsFromPaths(git_paths)
-            else:
-                repo_roots = sorted(set(getRepoRootsFromFiles(involved_files) + getRepoRootsFromPaths(options.args)))
+            repo_roots = sorted(set(getRepoRootsFromFiles(involved_files) + getRepoRootsFromPaths(options.args)))
             for repo_root in repo_roots:
                 print(f"Running git status in {repo_root}")
                 subprocess.run(
@@ -521,10 +478,134 @@ def main():
 
     except RuntimeError as e:
         print("Error: {}".format(str(e)))
-        return
+        return 1
+    return 0
+
+
+def loadConfig(path):
+    """Load and validate persistent command defaults."""
+    try:
+        with open(path, "rb") as config_file:
+            config = toml.load(config_file)
+    except (OSError, toml.TOMLDecodeError) as exc:
+        raise RuntimeError(f"Cannot load config '{path}': {exc}") from exc
+    required_lists = (
+        "extensions", "exclude",
+    )
+    for key in required_lists:
+        if not isinstance(config.get(key), list) or not all(isinstance(item, str) for item in config[key]):
+            raise RuntimeError(f"Config option '{key}' must be an array of strings")
+    if not isinstance(config.get("workspace"), str):
+        raise RuntimeError("Config option 'workspace' must be a string")
+    if not isinstance(config.get("jobs"), int) or config["jobs"] < 0:
+        raise RuntimeError("Config option 'jobs' must be a non-negative integer")
+    return config
+
+
+def runProjectCommands(command, projects, workspace, jobs):
+    """Run a maintenance command for each selected project."""
+    if command == "clone-all":
+        commands = [([str(SCRIPT_DIR / "git_clone.py"), "-C", workspace, project], workspace) for project in projects]
+    else:
+        target = {"build": None, "unit-test": "unit_test", "clean": "clean"}[command]
+        commands = []
+        for project in projects:
+            argv = ["make"]
+            if command in ("unit-test", "clean"):
+                argv += ["-j", str(jobs)]
+            argv += ["-C", os.path.join(workspace, project)]
+            if target:
+                argv.append(target)
+            commands.append((argv, workspace))
+
+    def run(entry):
+        argv, cwd = entry
+        print("Running " + " ".join(argv), flush=True)
+        return subprocess.run(argv, cwd=cwd).returncode
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        return 1 if any(pool.map(run, commands)) else 0
+
+
+def parseArguments(config):
+    parser = argparse.ArgumentParser(description="Synchronize shared modules and maintain their projects.")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="TOML config file (default: %(default)s).")
+    parser.add_argument("--workspace", help="Override the workspace from the config file.")
+    parser.add_argument("-V", "--verbose", action="count", default=0, help="Increase verbosity.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    help_text = {
+        "diff": "Show differences between synchronized module copies.",
+        "sync": "Copy newest module versions to matching older copies.",
+        "commit": "Commit changes in affected repositories.",
+        "pull": "Pull affected repositories with rebase.",
+        "push": "Push affected repositories.",
+        "status": "Show sync sources and repository status.",
+        "git-diff": "Show diffs in affected repositories.",
+        "clone-all": "Clone all missing project repositories.",
+        "build": "Build all relevant repositories.",
+        "unit-test": "Build and run all relevant unit tests.",
+        "clean": "Clean all relevant repositories.",
+    }
+    for name, description in help_text.items():
+        command_parser = subparsers.add_parser(name, help=description, description=description)
+        if name in ("diff", "sync", "commit", "pull", "push", "status", "git-diff"):
+            command_parser.add_argument("paths", nargs="*", help="Override the automatically discovered project paths.")
+            command_parser.add_argument("-f", "--filter", default="", help="Only process filenames matching this regex.")
+        if name == "sync":
+            command_parser.add_argument("--no-git-check", action="store_true", help="Allow overwriting locally modified files.")
+    return parser.parse_args()
+
+
+def main():
+    # Parse --config first because it supplies defaults used by all commands.
+    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap.add_argument("--config", default=str(DEFAULT_CONFIG))
+    bootstrap_options, _ = bootstrap.parse_known_args()
+    try:
+        config = loadConfig(bootstrap_options.config)
+    except RuntimeError as exc:
+        bootstrap.error(str(exc))
+    options = parseArguments(config)
+    workspace = options.workspace or config["workspace"]
+    if not os.path.isabs(workspace):
+        workspace = os.path.abspath(os.path.join(os.path.dirname(options.config), workspace))
+    jobs = config["jobs"] or (os.cpu_count() or 1)
+
+    try:
+        projects = getProjects(workspace, config["extensions"], config["exclude"])
+        if options.command in ("clone-all", "build", "unit-test", "clean"):
+            if options.command != "clone-all":
+                projects = [
+                    project for project in projects
+                    if os.path.isfile(os.path.join(workspace, project, "Makefile"))
+                ]
+            return runProjectCommands(options.command, projects, workspace, jobs)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    paths = options.paths or [os.path.join(workspace, project) for project in projects]
+    operation = argparse.Namespace(
+        args=paths,
+        extensions=config["extensions"],
+        filter=options.filter,
+        exclude=config["exclude"],
+        diff=options.command == "diff",
+        sync=options.command == "sync",
+        pull=options.command == "pull",
+        push=options.command == "push",
+        commit=options.command == "commit",
+        git_diff=options.command == "git-diff",
+        git_status=options.command == "status",
+        status=options.command == "status",
+        show_sync_sources=options.command == "status",
+        no_git_check=getattr(options, "no_git_check", False) or options.command == "status",
+        verbose=options.verbose,
+    )
+    return runSyncOperation(operation)
 
 
 
 # Call main().
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

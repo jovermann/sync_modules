@@ -20,6 +20,34 @@ and is self-contained.
 
 This tool was developed with the help of codex.
 
+## Commands
+
+Run commands from any directory. The default configuration discovers projects
+in the parent workspace:
+
+```sh
+sync_modules.py status
+sync_modules.py diff
+sync_modules.py sync
+sync_modules.py commit
+sync_modules.py pull
+sync_modules.py push
+sync_modules.py git-diff
+sync_modules.py clone-all
+sync_modules.py build
+sync_modules.py unit-test
+sync_modules.py clean
+```
+
+`diff`, `sync`, and the Git commands accept explicit paths to override project
+discovery. Use `--workspace` to temporarily override the configured workspace.
+
+Persistent settings are in `~/.sync_modules.toml`. It defines the workspace,
+parallel job count, source extensions, and exclusions used by every command.
+Projects containing a configured source extension are discovered automatically.
+A `jobs` value of `0` uses the available CPU count. Use `--config` to select a
+different configuration file.
+
 ## git_new.py
 
 Create a new GitHub project and clone it into the current workspace:

@@ -41,5 +41,5 @@ install_link() {
     echo "$link_path -> $link_target"
 }
 
-install_link "$parent_dir/Makefile" "$repo_name/Makefile"
+install_link "$parent_dir/sync_modules.py" "$repo_name/sync_modules.py"
 install_link "$parent_dir/git_clone.sh" "$repo_name/git_clone.py"
