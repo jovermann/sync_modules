@@ -27,6 +27,7 @@ in the parent workspace:
 
 ```sh
 sync_modules.py status
+sync_modules.py git-status
 sync_modules.py diff
 sync_modules.py sync
 sync_modules.py commit
@@ -36,15 +37,15 @@ sync_modules.py git-diff
 sync_modules.py clone PROJECT
 sync_modules.py clone --list
 sync_modules.py clone --all
-sync_modules.py clone-all
 sync_modules.py new PROJECT
 sync_modules.py build
 sync_modules.py unit-test
 sync_modules.py clean
 ```
 
-`diff`, `sync`, and the Git commands accept explicit paths to override project
-discovery. Use `--workspace` to temporarily override the configured workspace.
+Local maintenance commands operate on projects discovered from the configured
+workspace. `clone` and `new` accept remote repository names. Use `--workspace`
+to temporarily override the workspace.
 
 Persistent settings are in `~/.sync_modules.toml`. It defines the workspace,
 parallel job count, source extensions, and exclusions used by every command.
@@ -107,4 +108,3 @@ sync_modules.py clone project_name
 
 Use `clone --list` to list repositories for the inferred owner and
 `clone --all` to clone every repository that is not already present locally.
-`clone-all` remains as a shorthand for `clone --all`.

@@ -38,12 +38,6 @@ try:
 except FileNotFoundError as exc:
     raise SystemExit(f"Cannot find shared TOML module at {TOML_PATH}") from exc
 
-extensions = ""
-filter = ""
-exclude = []
-defaultWorkspace = str(SCRIPT_DIR.parent)
-
-
 class Remote:
     """Parsed GitHub remote URL."""
 
@@ -155,6 +149,7 @@ def listRemoteProjects(remote):
 
 def cloneProject(remote, project, work_dir):
     """Clone one project unless its target already exists."""
+    validateProjectName(project, allow_owner=False)
     target = os.path.join(work_dir, project)
     if os.path.exists(target):
         print(f"Skipping {project} (already exists)")
@@ -166,7 +161,7 @@ def cloneProject(remote, project, work_dir):
 
 def runCloneCommand(options, default_workspace):
     """Implement the clone subcommand."""
-    work_dir = os.path.abspath(options.directory or default_workspace)
+    work_dir = os.path.abspath(default_workspace)
     remote = findRemote(work_dir)
     if remote is None:
         raise RuntimeError(f"Found no GitHub remote in '{work_dir}' or its direct subdirectories.")
@@ -181,7 +176,7 @@ def runCloneCommand(options, default_workspace):
         cloneProject(remote, options.project, work_dir)
 
 
-def validateProjectName(project):
+def validateProjectName(project, allow_owner=True):
     """Reject values which look like paths rather than repository names."""
     if project in ("", ".", ".."):
         raise RuntimeError("Repository name must not be empty, '.', or '..'.")
@@ -189,8 +184,12 @@ def validateProjectName(project):
         raise RuntimeError("Repository name must not start or end with '/'.")
     if "\\" in project:
         raise RuntimeError("Repository name must not contain backslashes.")
+    if not allow_owner and "/" in project:
+        raise RuntimeError("Repository name must not contain '/'.")
     if project.count("/") > 1:
         raise RuntimeError("Use REPO or OWNER/REPO, not a path.")
+    if any(part in ("", ".", "..") for part in project.split("/")):
+        raise RuntimeError("Repository owner and name must not be empty, '.', or '..'.")
 
 
 def configureUpstream(clone_dir, remote_name, dry_run=False):
@@ -207,7 +206,7 @@ def configureUpstream(clone_dir, remote_name, dry_run=False):
 
 def runNewCommand(options, default_workspace):
     """Create or search for a GitHub repository."""
-    work_dir = os.path.abspath(options.directory or default_workspace)
+    work_dir = os.path.abspath(default_workspace)
     validateProjectName(options.project)
     if not os.path.isdir(work_dir):
         raise RuntimeError(f"Workspace directory does not exist: '{work_dir}'.")
@@ -274,28 +273,28 @@ class File:
             self.hash = hashlib.sha256(self.content).hexdigest()
 
 
-def addFile(files, path):
+def addFile(files, path, accepted_extensions, filename_filter):
     """Add file to files if it has an accepted extension.
     """
     ext = os.path.splitext(path)[1][1:]
-    if ext not in extensions:
+    if ext not in accepted_extensions:
         return
     basename = os.path.basename(path)
-    if filter:
-        if not re.fullmatch(filter, basename):
+    if filename_filter:
+        if not re.fullmatch(filename_filter, basename):
             return
     files.append(File(path))
 
 
-def addDir(files, path):
+def addDir(files, path, accepted_extensions, filename_filter, excluded_names):
     """Add all files in dir, recursively.
     """
     for walkpath, walkdirs, walkfiles in os.walk(path):
-        walkdirs[:] = [d for d in walkdirs if d not in exclude]
+        walkdirs[:] = [d for d in walkdirs if d not in excluded_names]
         for f in walkfiles:
-            if f in exclude:
+            if f in excluded_names:
                 continue
-            addFile(files, os.path.join(walkpath, f))
+            addFile(files, os.path.join(walkpath, f), accepted_extensions, filename_filter)
 
 
 def printDiff(file_a, file_b):
@@ -359,49 +358,12 @@ def getUniqueHashPrefixes(files, min_len=4):
             prefix_map[h] = h
     return prefix_map
 
-def getRepoRootForFile(file):
-    """Return git repo root for file, or None if not in a repo.
-    """
-    repo_dir = os.path.dirname(file.path)
-    result = subprocess.run(
-        ["git", "-C", repo_dir, "rev-parse", "--show-toplevel"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip()
-
-def getRepoRoots(variant_sets):
-    """Return sorted unique repo roots for variant sets.
-    """
+def getRepositoryRoots(project_paths):
+    """Resolve repository roots once for the scanned project paths."""
     roots = set()
-    for entry in variant_sets:
-        for files in entry["hash_to_files"].values():
-            for file in files:
-                root = getRepoRootForFile(file)
-                if root:
-                    roots.add(root)
-    return sorted(roots)
-
-def getRepoRootsFromFiles(files):
-    """Return sorted unique repo roots for a list of files.
-    """
-    roots = set()
-    for file in files:
-        root = getRepoRootForFile(file)
-        if root:
-            roots.add(root)
-    return sorted(roots)
-
-def getRepoRootsFromPaths(paths):
-    """Return sorted unique repo roots containing the supplied paths."""
-    roots = set()
-    for path in paths:
-        probe = path if os.path.isdir(path) else os.path.dirname(path)
+    for path in project_paths:
         result = subprocess.run(
-            ["git", "-C", probe, "rev-parse", "--show-toplevel"],
+            ["git", "-C", path, "rev-parse", "--show-toplevel"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -502,30 +464,18 @@ def getProjects(workspace, accepted_extensions, excluded_names):
 
 
 def runSyncOperation(options):
-    """Compare, synchronize, or run a Git operation on selected paths."""
-    global extensions, filter, exclude
-    if options.status:
-        options.show_sync_sources = True
-        options.git_status = True
-
-    extensions = options.extensions
-    filter = options.filter
-    exclude = options.exclude
-
+    """Compare or synchronize shared files in the scanned projects."""
     try:
         # Read all files and dirs.
         fileListAll = []
-        for path in options.args:
-            if not os.path.exists(path):
-                print("Error: Path '{}' does not exist.\n".format(path))
-            elif os.path.isfile(path):
-                # Explicit files are intentional synchronization inputs and do
-                # not need to match the directory extension filter.
-                fileListAll.append(File(path))
-            elif os.path.isdir(path):
-                addDir(fileListAll, path)
+        for path in options.project_paths:
+            if os.path.isdir(path):
+                addDir(
+                    fileListAll, path, options.extensions, options.filter,
+                    options.exclude,
+                )
             else:
-                print("Warning: Ignoring non-regular file '{}'.\n".format(path))
+                raise RuntimeError(f"Discovered project path is not a directory: '{path}'")
 
         # Build basename to file list map.
         name2fileList = {}
@@ -538,9 +488,7 @@ def runSyncOperation(options):
         # Build file set variants.
         in_sync_names = []
         variant_sets = []
-        involved_files = []
         for name, fileList in sorted(name2fileList.items()):
-            involved_files.extend(fileList)
             if len(fileList) < 2:
                 continue
 
@@ -583,10 +531,10 @@ def runSyncOperation(options):
                     sync_source = " (sync-source)" if file.path == entry["newest"].path else ""
                     print(f"    hash={hash_prefixes[file.hash]} len={len(file.content):6d} date={date} {file.path}{sync_source}")
 
-        if options.show_sync_sources and not variant_sets:
+        if options.command == "status" and not variant_sets:
             print("All shared files are in sync; sync_modules.py sync would copy nothing.")
 
-        if options.diff:
+        if options.command == "diff":
             for entry in variant_sets:
                 content_to_files = {}
                 for file in entry["other"]:
@@ -599,70 +547,6 @@ def runSyncOperation(options):
                         print(f"diff -u {file.path} {entry['newest'].path}")
                     printDiff(files[0], entry["newest"])
 
-        if options.git_diff:
-            repo_roots = sorted(set(getRepoRootsFromFiles(involved_files) + getRepoRootsFromPaths(options.args)))
-            for repo_root in repo_roots:
-                print(f"Running git diff in {repo_root}")
-                subprocess.run(["git", "-C", repo_root, "--no-pager", "diff"])
-
-        if options.git_status:
-            repo_roots = sorted(set(getRepoRootsFromFiles(involved_files) + getRepoRootsFromPaths(options.args)))
-            for repo_root in repo_roots:
-                print(f"Running git status in {repo_root}")
-                subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        repo_root,
-                        "status",
-                        "--short",
-                        "--branch",
-                        "--untracked-files=no",
-                    ]
-                )
-
-        if options.pull or options.push or options.commit:
-            repo_roots = sorted(set(getRepoRootsFromFiles(involved_files) + getRepoRootsFromPaths(options.args)))
-            commit_message_file = None
-            commit_message = ""
-            first_commit_done = False
-            try:
-                for repo_root in repo_roots:
-                    committed_this_repo = False
-                    if options.pull:
-                        print(f"Running git pull --rebase in {repo_root}")
-                        subprocess.run(["git", "-C", repo_root, "pull", "--rebase"])
-                    if options.commit:
-                        if not repoHasModifications(repo_root):
-                            print(f"Skipping commit in {repo_root} (no modifications)")
-                        else:
-                            if not first_commit_done:
-                                print(f"Running git commit -a in {repo_root}")
-                                result = subprocess.run(["git", "-C", repo_root, "commit", "-a"])
-                                if result.returncode != 0:
-                                    print(f"Error: Commit failed in {repo_root}.")
-                                    sys.exit(1)
-                                commit_message = getLastCommitMessage(repo_root)
-                                if not commit_message:
-                                    print("Warning: Empty commit message, skipping commits.")
-                                    break
-                                with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tmp:
-                                    tmp.write(commit_message)
-                                    commit_message_file = tmp.name
-                                first_commit_done = True
-                            else:
-                                print(f"Running git commit -a in {repo_root}")
-                                subprocess.run(["git", "-C", repo_root, "commit", "-a", "-F", commit_message_file])
-                            committed_this_repo = True
-                    if options.push:
-                        if options.commit and not committed_this_repo:
-                            continue
-                        print(f"Running git push in {repo_root}")
-                        subprocess.run(["git", "-C", repo_root, "push"])
-            finally:
-                if commit_message_file:
-                    os.unlink(commit_message_file)
-
         blocked_paths = set()
         git_error = False
         if not options.no_git_check:
@@ -673,18 +557,18 @@ def runSyncOperation(options):
                         status = "clean" if ok else "modified"
                         print(f"Git status for {file.path}: {status}")
                     if not ok:
-                        if options.sync:
+                        if options.command == "sync":
                             print(f"Error: {message}")
                             blocked_paths.add(file.path)
                             git_error = True
                         else:
                             print(f"Warning: {message}")
 
-        if options.sync and git_error:
+        if options.command == "sync" and git_error:
             print("Error: Aborting --sync due to git check failures.")
             sys.exit(1)
 
-        if options.sync:
+        if options.command == "sync":
             for entry in variant_sets:
                 for file in entry["other"]:
                     if file.path in blocked_paths:
@@ -695,6 +579,65 @@ def runSyncOperation(options):
     except RuntimeError as e:
         print("Error: {}".format(str(e)))
         return 1
+    return 0
+
+
+def runGitOperation(command, repo_roots):
+    """Run one Git maintenance command on precomputed repositories."""
+    if command == "git-status":
+        return_code = 0
+        for repo_root in repo_roots:
+            print(f"Running git status in {repo_root}")
+            if subprocess.run([
+                "git", "-C", repo_root, "status", "--short", "--branch",
+                "--untracked-files=no",
+            ]).returncode != 0:
+                return_code = 1
+        return return_code
+    if command == "git-diff":
+        return_code = 0
+        for repo_root in repo_roots:
+            print(f"Running git diff in {repo_root}")
+            if subprocess.run(["git", "-C", repo_root, "--no-pager", "diff"]).returncode != 0:
+                return_code = 1
+        return return_code
+    if command in ("pull", "push"):
+        git_args = ["pull", "--rebase"] if command == "pull" else ["push"]
+        return_code = 0
+        for repo_root in repo_roots:
+            print(f"Running git {' '.join(git_args)} in {repo_root}")
+            if subprocess.run(["git", "-C", repo_root, *git_args]).returncode != 0:
+                return_code = 1
+        return return_code
+
+    if command != "commit":
+        raise RuntimeError(f"Unsupported Git operation: {command}")
+
+    commit_message_file = None
+    try:
+        for repo_root in repo_roots:
+            if not repoHasModifications(repo_root):
+                print(f"Skipping commit in {repo_root} (no modifications)")
+                continue
+            print(f"Running git commit -a in {repo_root}")
+            if commit_message_file is None:
+                result = subprocess.run(["git", "-C", repo_root, "commit", "-a"])
+                if result.returncode != 0:
+                    return 1
+                commit_message = getLastCommitMessage(repo_root)
+                if not commit_message:
+                    print("Warning: Empty commit message, skipping commits.")
+                    return 1
+                with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tmp:
+                    tmp.write(commit_message)
+                    commit_message_file = tmp.name
+            elif subprocess.run(
+                ["git", "-C", repo_root, "commit", "-a", "-F", commit_message_file]
+            ).returncode != 0:
+                return 1
+    finally:
+        if commit_message_file:
+            os.unlink(commit_message_file)
     return 0
 
 
@@ -736,15 +679,16 @@ def runProjectCommands(command, projects, workspace, jobs):
         print("Running " + " ".join(argv), flush=True)
         return subprocess.run(argv, cwd=cwd).returncode
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+    workers = jobs if command == "build" else 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         return 1 if any(pool.map(run, commands)) else 0
 
 
-def parseArguments(config):
+def parseArguments():
     parser = argparse.ArgumentParser(description="Synchronize shared modules and maintain their projects.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="TOML config file (default: %(default)s).")
     parser.add_argument("--workspace", help="Override the workspace from the config file.")
-    parser.add_argument("-V", "--verbose", action="count", default=0, help="Increase verbosity.")
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     help_text = {
         "diff": "Show differences between synchronized module copies.",
@@ -752,7 +696,8 @@ def parseArguments(config):
         "commit": "Commit changes in affected repositories.",
         "pull": "Pull affected repositories with rebase.",
         "push": "Push affected repositories.",
-        "status": "Show sync sources and repository status.",
+        "status": "Show synchronization status.",
+        "git-status": "Show status of discovered Git repositories.",
         "git-diff": "Show diffs in affected repositories.",
         "build": "Build all relevant repositories.",
         "unit-test": "Build and run all relevant unit tests.",
@@ -760,26 +705,20 @@ def parseArguments(config):
     }
     for name, description in help_text.items():
         command_parser = subparsers.add_parser(name, help=description, description=description)
-        if name in ("diff", "sync", "commit", "pull", "push", "status", "git-diff"):
-            command_parser.add_argument("paths", nargs="*", help="Override the automatically discovered project paths.")
+        if name in ("diff", "sync", "status"):
             command_parser.add_argument("-f", "--filter", default="", help="Only process filenames matching this regex.")
         if name == "sync":
             command_parser.add_argument("--no-git-check", action="store_true", help="Allow overwriting locally modified files.")
 
     clone_parser = subparsers.add_parser("clone", help="Clone sibling GitHub repositories.")
     clone_parser.add_argument("project", nargs="?", help="Repository name to clone.")
-    clone_parser.add_argument("-l", "--list", action="store_true", help="List repositories for the inferred owner.")
-    clone_parser.add_argument("-a", "--all", action="store_true", help="Clone all repositories not available locally.")
-    clone_parser.add_argument("-C", "--directory", help="Workspace override for this command.")
-
-    clone_all_parser = subparsers.add_parser("clone-all", help="Alias for clone --all.")
-    clone_all_parser.set_defaults(project=None, list=False, all=True, directory=None)
+    clone_mode = clone_parser.add_mutually_exclusive_group()
+    clone_mode.add_argument("-l", "--list", action="store_true", help="List repositories for the inferred owner.")
+    clone_mode.add_argument("-a", "--all", action="store_true", help="Clone all repositories not available locally.")
 
     new_parser = subparsers.add_parser("new", help="Create and clone a new GitHub repository.")
     new_parser.add_argument("project", help="Repository name, or OWNER/REPO.")
-    new_parser.add_argument("-C", "--directory", help="Workspace override for this command.")
     new_parser.add_argument("-n", "--dry-run", action="store_true", help="Print commands without making changes.")
-    new_parser.add_argument("-v", "--verbose", action="count", default=0, help="Print command details.")
     new_parser.add_argument("-l", "--list-existing-projects", action="store_true", help="Search repositories instead of creating one.")
     new_parser.add_argument("-L", "--limit", type=int, default=30, help="Maximum search results (default: 30).")
     new_parser.add_argument("--owner", help="GitHub owner or organization.")
@@ -810,47 +749,45 @@ def main():
         config = loadConfig(bootstrap_options.config)
     except RuntimeError as exc:
         bootstrap.error(str(exc))
-    options = parseArguments(config)
+    options = parseArguments()
     workspace = options.workspace or config["workspace"]
     if not os.path.isabs(workspace):
         workspace = os.path.abspath(os.path.join(os.path.dirname(options.config), workspace))
     jobs = config["jobs"] or (os.cpu_count() or 1)
 
     try:
-        if options.command in ("clone", "clone-all"):
+        if options.command == "clone":
             if not options.list and not options.all and not options.project:
                 raise RuntimeError("Specify PROJECT, --list, or --all.")
+            if options.project and (options.list or options.all):
+                raise RuntimeError("PROJECT, --list, and --all are mutually exclusive.")
             runCloneCommand(options, workspace)
             return 0
         if options.command == "new":
             runNewCommand(options, workspace)
             return 0
         projects = getProjects(workspace, config["extensions"], config["exclude"])
+        project_paths = [os.path.join(workspace, project) for project in projects]
         if options.command in ("build", "unit-test", "clean"):
             projects = [
                 project for project in projects
                 if os.path.isfile(os.path.join(workspace, project, "Makefile"))
             ]
             return runProjectCommands(options.command, projects, workspace, jobs)
+        if options.command in ("commit", "pull", "push", "git-diff", "git-status"):
+            repo_roots = getRepositoryRoots(project_paths)
+        if options.command in ("commit", "pull", "push", "git-diff", "git-status"):
+            return runGitOperation(options.command, repo_roots)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    paths = options.paths or [os.path.join(workspace, project) for project in projects]
     operation = argparse.Namespace(
-        args=paths,
+        project_paths=project_paths,
+        command=options.command,
         extensions=config["extensions"],
         filter=options.filter,
         exclude=config["exclude"],
-        diff=options.command == "diff",
-        sync=options.command == "sync",
-        pull=options.command == "pull",
-        push=options.command == "push",
-        commit=options.command == "commit",
-        git_diff=options.command == "git-diff",
-        git_status=options.command == "status",
-        status=options.command == "status",
-        show_sync_sources=options.command == "status",
         no_git_check=getattr(options, "no_git_check", False) or options.command == "status",
         verbose=options.verbose,
     )
