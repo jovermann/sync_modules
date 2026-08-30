@@ -2,7 +2,7 @@
 #
 # sync_modules.py - synchronize shared source modules and maintain their projects
 #
-# Copyright (C) 2024-2025 by Johannes Overmann <Johannes.Overmann@joov.de>
+# Copyright (C) 2024-2026 by Johannes Overmann <Johannes.Overmann@joov.de>
 #
 # Distributed under the Boost Software License, Version 1.0.
 # (See accompanying file LICENSE or copy at https://www.boost.org/LICENSE_1_0.txt)
@@ -11,6 +11,7 @@ import argparse
 import concurrent.futures
 import os
 import re
+import shlex
 import datetime
 import hashlib
 import importlib.util
@@ -41,6 +42,221 @@ extensions = ""
 filter = ""
 exclude = []
 defaultWorkspace = str(SCRIPT_DIR.parent)
+
+
+class Remote:
+    """Parsed GitHub remote URL."""
+
+    def __init__(self, url, host, owner, repo):
+        self.url = url
+        self.host = host
+        self.owner = owner
+        self.repo = repo
+
+    def urlForProject(self, project):
+        """Return a remote URL like this one with a different repository name."""
+        suffixes = [
+            ("/" + self.repo + ".git", "/" + project + ".git"),
+            ("/" + self.repo, "/" + project),
+            (":" + self.owner + "/" + self.repo + ".git", ":" + self.owner + "/" + project + ".git"),
+            (":" + self.owner + "/" + self.repo, ":" + self.owner + "/" + project),
+        ]
+        for suffix, replacement in suffixes:
+            if self.url.endswith(suffix):
+                return self.url[: -len(suffix)] + replacement
+        raise RuntimeError(f"Cannot rewrite remote URL '{self.url}'.")
+
+
+def printCommand(args, cwd=None):
+    """Print a shell-style representation of a command."""
+    prefix = f"(cd {shlex.quote(cwd)} && " if cwd else "("
+    print(prefix + " ".join(shlex.quote(arg) for arg in args) + ")")
+
+
+def runCommand(args, cwd=None, capture=False, check=True, dry_run=False):
+    """Run a command, or print it in dry-run mode."""
+    if dry_run:
+        printCommand(args, cwd=cwd)
+        return None
+    kwargs = {}
+    if capture:
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    result = subprocess.run(args, cwd=cwd, **kwargs)
+    if check and result.returncode != 0:
+        command = " ".join(args)
+        if capture and result.stderr:
+            raise RuntimeError(f"Command failed: {command}\n{result.stderr.strip()}")
+        raise RuntimeError(f"Command failed: {command}")
+    return result
+
+
+def parseGithubRemote(url):
+    """Parse common GitHub remote URL forms."""
+    patterns = [
+        r"^https://([^/]+)/([^/]+)/([^/]+?)(?:\.git)?/?$",
+        r"^git@([^:]+):([^/]+)/([^/]+?)(?:\.git)?$",
+        r"^ssh://git@([^/]+)/([^/]+)/([^/]+?)(?:\.git)?/?$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, url)
+        if match:
+            return Remote(url, match.group(1), match.group(2), match.group(3))
+    return None
+
+
+def getRemoteUrl(repo_dir):
+    """Return a likely fetch remote URL from a repository, or None."""
+    remote_names = ["origin"]
+    remotes = runCommand(["git", "-C", repo_dir, "remote"], capture=True, check=False)
+    if remotes.returncode == 0:
+        remote_names.extend(name for name in remotes.stdout.splitlines() if name and name != "origin")
+    for remote_name in remote_names:
+        result = runCommand(
+            ["git", "-C", repo_dir, "remote", "get-url", remote_name],
+            capture=True,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    return None
+
+
+def findRemote(start_dir):
+    """Find and parse a GitHub remote in a directory or direct child."""
+    candidates = []
+    if os.path.isdir(os.path.join(start_dir, ".git")):
+        candidates.append(start_dir)
+    try:
+        entries = sorted(os.listdir(start_dir))
+    except OSError as exc:
+        raise RuntimeError(f"Cannot inspect '{start_dir}': {exc}") from exc
+    for entry in entries:
+        path = os.path.join(start_dir, entry)
+        if os.path.isdir(os.path.join(path, ".git")):
+            candidates.append(path)
+    for repo_dir in candidates:
+        url = getRemoteUrl(repo_dir)
+        remote = parseGithubRemote(url) if url else None
+        if remote:
+            return remote
+    return None
+
+
+def listRemoteProjects(remote):
+    """List repositories owned by the inferred GitHub owner."""
+    if shutil.which("gh") is None:
+        raise RuntimeError("Cannot list projects because 'gh' is not installed.")
+    result = runCommand(
+        ["gh", "repo", "list", remote.owner, "--limit", "1000", "--json", "name", "--jq", ".[].name"],
+        capture=True,
+    )
+    return sorted(name for name in result.stdout.splitlines() if name)
+
+
+def cloneProject(remote, project, work_dir):
+    """Clone one project unless its target already exists."""
+    target = os.path.join(work_dir, project)
+    if os.path.exists(target):
+        print(f"Skipping {project} (already exists)")
+        return
+    url = remote.urlForProject(project)
+    print(f"Cloning {url}")
+    runCommand(["git", "clone", url, project], cwd=work_dir)
+
+
+def runCloneCommand(options, default_workspace):
+    """Implement the clone subcommand."""
+    work_dir = os.path.abspath(options.directory or default_workspace)
+    remote = findRemote(work_dir)
+    if remote is None:
+        raise RuntimeError(f"Found no GitHub remote in '{work_dir}' or its direct subdirectories.")
+    projects = listRemoteProjects(remote) if options.list or options.all else []
+    if options.list:
+        for project in projects:
+            print(project)
+    if options.all:
+        for project in projects:
+            cloneProject(remote, project, work_dir)
+    if options.project:
+        cloneProject(remote, options.project, work_dir)
+
+
+def validateProjectName(project):
+    """Reject values which look like paths rather than repository names."""
+    if project in ("", ".", ".."):
+        raise RuntimeError("Repository name must not be empty, '.', or '..'.")
+    if project.startswith("/") or project.endswith("/"):
+        raise RuntimeError("Repository name must not start or end with '/'.")
+    if "\\" in project:
+        raise RuntimeError("Repository name must not contain backslashes.")
+    if project.count("/") > 1:
+        raise RuntimeError("Use REPO or OWNER/REPO, not a path.")
+
+
+def configureUpstream(clone_dir, remote_name, dry_run=False):
+    """Configure an initial branch to track its same-named remote branch."""
+    branch = "main"
+    if not dry_run:
+        result = runCommand(["git", "-C", clone_dir, "symbolic-ref", "--short", "HEAD"], capture=True)
+        branch = result.stdout.strip()
+        if not branch:
+            raise RuntimeError(f"Cannot determine the initial branch in '{clone_dir}'.")
+    runCommand(["git", "config", f"branch.{branch}.remote", remote_name], cwd=clone_dir, dry_run=dry_run)
+    runCommand(["git", "config", f"branch.{branch}.merge", f"refs/heads/{branch}"], cwd=clone_dir, dry_run=dry_run)
+
+
+def runNewCommand(options, default_workspace):
+    """Create or search for a GitHub repository."""
+    work_dir = os.path.abspath(options.directory or default_workspace)
+    validateProjectName(options.project)
+    if not os.path.isdir(work_dir):
+        raise RuntimeError(f"Workspace directory does not exist: '{work_dir}'.")
+    if options.list_existing_projects:
+        if options.limit <= 0:
+            raise RuntimeError("--limit must be greater than zero.")
+        if shutil.which("gh") is None and not options.dry_run:
+            raise RuntimeError("Cannot search repositories because 'gh' is not installed.")
+        runCommand(
+            ["gh", "search", "repos", "--limit", str(options.limit), "--", options.project],
+            dry_run=options.dry_run,
+        )
+        return
+
+    owner = options.owner
+    if not owner and "/" not in options.project:
+        remote = findRemote(work_dir)
+        if remote:
+            owner = remote.owner
+            if options.verbose:
+                print(f"Inferred owner '{owner}' from remote '{remote.url}'.")
+    full_name = options.project if "/" in options.project or not owner else f"{owner}/{options.project}"
+    clone_dir = os.path.join(work_dir, full_name.rsplit("/", 1)[-1])
+    if os.path.exists(clone_dir):
+        raise RuntimeError(f"Clone target already exists: '{clone_dir}'.")
+    if shutil.which("gh") is None and not options.dry_run:
+        raise RuntimeError("Cannot create repository because 'gh' is not installed.")
+
+    command = ["gh", "repo", "create", full_name, options.visibility, "--clone"]
+    for value, flag in (
+        (options.description, "--description"), (options.homepage, "--homepage"),
+        (options.gitignore, "--gitignore"), (options.license, "--license"),
+        (options.remote, "--remote"), (options.team, "--team"), (options.template, "--template"),
+    ):
+        if value:
+            command.extend([flag, value])
+    for enabled, flag in (
+        (options.add_readme, "--add-readme"),
+        (options.disable_issues, "--disable-issues"),
+        (options.disable_wiki, "--disable-wiki"),
+    ):
+        if enabled:
+            command.append(flag)
+    if options.dry_run and not owner and "/" not in options.project:
+        print("No owner inferred; gh will use the authenticated account default.")
+    if options.verbose and not options.dry_run:
+        printCommand(command, cwd=work_dir)
+    runCommand(command, cwd=work_dir, dry_run=options.dry_run)
+    configureUpstream(clone_dir, options.remote or "origin", dry_run=options.dry_run)
 
 class File:
     """Path, basename and content of an existing file in the filesystem.
@@ -504,19 +720,16 @@ def loadConfig(path):
 
 def runProjectCommands(command, projects, workspace, jobs):
     """Run a maintenance command for each selected project."""
-    if command == "clone-all":
-        commands = [([str(SCRIPT_DIR / "git_clone.py"), "-C", workspace, project], workspace) for project in projects]
-    else:
-        target = {"build": None, "unit-test": "unit_test", "clean": "clean"}[command]
-        commands = []
-        for project in projects:
-            argv = ["make"]
-            if command in ("unit-test", "clean"):
-                argv += ["-j", str(jobs)]
-            argv += ["-C", os.path.join(workspace, project)]
-            if target:
-                argv.append(target)
-            commands.append((argv, workspace))
+    target = {"build": None, "unit-test": "unit_test", "clean": "clean"}[command]
+    commands = []
+    for project in projects:
+        argv = ["make"]
+        if command in ("unit-test", "clean"):
+            argv += ["-j", str(jobs)]
+        argv += ["-C", os.path.join(workspace, project)]
+        if target:
+            argv.append(target)
+        commands.append((argv, workspace))
 
     def run(entry):
         argv, cwd = entry
@@ -541,7 +754,6 @@ def parseArguments(config):
         "push": "Push affected repositories.",
         "status": "Show sync sources and repository status.",
         "git-diff": "Show diffs in affected repositories.",
-        "clone-all": "Clone all missing project repositories.",
         "build": "Build all relevant repositories.",
         "unit-test": "Build and run all relevant unit tests.",
         "clean": "Clean all relevant repositories.",
@@ -553,6 +765,39 @@ def parseArguments(config):
             command_parser.add_argument("-f", "--filter", default="", help="Only process filenames matching this regex.")
         if name == "sync":
             command_parser.add_argument("--no-git-check", action="store_true", help="Allow overwriting locally modified files.")
+
+    clone_parser = subparsers.add_parser("clone", help="Clone sibling GitHub repositories.")
+    clone_parser.add_argument("project", nargs="?", help="Repository name to clone.")
+    clone_parser.add_argument("-l", "--list", action="store_true", help="List repositories for the inferred owner.")
+    clone_parser.add_argument("-a", "--all", action="store_true", help="Clone all repositories not available locally.")
+    clone_parser.add_argument("-C", "--directory", help="Workspace override for this command.")
+
+    clone_all_parser = subparsers.add_parser("clone-all", help="Alias for clone --all.")
+    clone_all_parser.set_defaults(project=None, list=False, all=True, directory=None)
+
+    new_parser = subparsers.add_parser("new", help="Create and clone a new GitHub repository.")
+    new_parser.add_argument("project", help="Repository name, or OWNER/REPO.")
+    new_parser.add_argument("-C", "--directory", help="Workspace override for this command.")
+    new_parser.add_argument("-n", "--dry-run", action="store_true", help="Print commands without making changes.")
+    new_parser.add_argument("-v", "--verbose", action="count", default=0, help="Print command details.")
+    new_parser.add_argument("-l", "--list-existing-projects", action="store_true", help="Search repositories instead of creating one.")
+    new_parser.add_argument("-L", "--limit", type=int, default=30, help="Maximum search results (default: 30).")
+    new_parser.add_argument("--owner", help="GitHub owner or organization.")
+    visibility = new_parser.add_mutually_exclusive_group()
+    visibility.add_argument("--private", action="store_const", const="--private", dest="visibility")
+    visibility.add_argument("--public", action="store_const", const="--public", dest="visibility")
+    visibility.add_argument("--internal", action="store_const", const="--internal", dest="visibility")
+    new_parser.set_defaults(visibility="--public")
+    new_parser.add_argument("-d", "--description")
+    new_parser.add_argument("--homepage")
+    new_parser.add_argument("-g", "--gitignore", help="GitHub gitignore template.")
+    new_parser.add_argument("--license", help="GitHub license keyword.")
+    new_parser.add_argument("--add-readme", action="store_true")
+    new_parser.add_argument("--disable-issues", action="store_true")
+    new_parser.add_argument("--disable-wiki", action="store_true")
+    new_parser.add_argument("--remote", help="Remote name for the clone.")
+    new_parser.add_argument("--team", help="Organization team to grant access.")
+    new_parser.add_argument("-t", "--template", help="Template repository.")
     return parser.parse_args()
 
 
@@ -572,13 +817,20 @@ def main():
     jobs = config["jobs"] or (os.cpu_count() or 1)
 
     try:
+        if options.command in ("clone", "clone-all"):
+            if not options.list and not options.all and not options.project:
+                raise RuntimeError("Specify PROJECT, --list, or --all.")
+            runCloneCommand(options, workspace)
+            return 0
+        if options.command == "new":
+            runNewCommand(options, workspace)
+            return 0
         projects = getProjects(workspace, config["extensions"], config["exclude"])
-        if options.command in ("clone-all", "build", "unit-test", "clean"):
-            if options.command != "clone-all":
-                projects = [
-                    project for project in projects
-                    if os.path.isfile(os.path.join(workspace, project, "Makefile"))
-                ]
+        if options.command in ("build", "unit-test", "clean"):
+            projects = [
+                project for project in projects
+                if os.path.isfile(os.path.join(workspace, project, "Makefile"))
+            ]
             return runProjectCommands(options.command, projects, workspace, jobs)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)

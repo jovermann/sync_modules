@@ -39,6 +39,42 @@ class ConfigTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    def test_parse_github_remote_and_rewrite_project(self):
+        remote = sync_modules.parseGithubRemote("git@github.com:owner/source.git")
+        self.assertEqual(remote.owner, "owner")
+        self.assertEqual(
+            remote.urlForProject("target"),
+            "git@github.com:owner/target.git",
+        )
+
+    def test_clone_skips_existing_project(self):
+        remote = sync_modules.Remote(
+            "https://github.com/owner/source.git", "github.com", "owner", "source"
+        )
+        with tempfile.TemporaryDirectory() as workspace:
+            Path(workspace, "target").mkdir()
+            with mock.patch.object(sync_modules, "runCommand") as run:
+                sync_modules.cloneProject(remote, "target", workspace)
+            run.assert_not_called()
+
+    def test_new_dry_run_configures_upstream(self):
+        options = argparse.Namespace(
+            project="owner/new_repo", directory=None, dry_run=True, verbose=0,
+            list_existing_projects=False, limit=30, owner=None,
+            visibility="--private", description=None, homepage=None,
+            gitignore=None, license=None, add_readme=False,
+            disable_issues=False, disable_wiki=False, remote=None,
+            team=None, template=None,
+        )
+        with tempfile.TemporaryDirectory() as workspace:
+            with mock.patch.object(sync_modules, "runCommand") as run:
+                sync_modules.runNewCommand(options, workspace)
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(
+                run.call_args_list[0].args[0],
+                ["gh", "repo", "create", "owner/new_repo", "--private", "--clone"],
+            )
+
     def test_project_command_propagates_failure(self):
         completed = argparse.Namespace(returncode=2)
         with mock.patch.object(sync_modules.subprocess, "run", return_value=completed) as run:

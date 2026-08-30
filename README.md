@@ -33,7 +33,11 @@ sync_modules.py commit
 sync_modules.py pull
 sync_modules.py push
 sync_modules.py git-diff
+sync_modules.py clone PROJECT
+sync_modules.py clone --list
+sync_modules.py clone --all
 sync_modules.py clone-all
+sync_modules.py new PROJECT
 sync_modules.py build
 sync_modules.py unit-test
 sync_modules.py clean
@@ -48,12 +52,12 @@ Projects containing a configured source extension are discovered automatically.
 A `jobs` value of `0` uses the available CPU count. Use `--config` to select a
 different configuration file.
 
-## git_new.py
+## Creating repositories
 
 Create a new GitHub project and clone it into the current workspace:
 
 ```sh
-sync_modules/git_new.py my_new_tool
+sync_modules.py new my_new_tool
 ```
 
 The new repository's initial branch is configured to track the matching branch
@@ -65,9 +69,9 @@ Before creating a repository, use `-l` / `--list-existing-projects`
 to search for existing GitHub projects with a candidate name:
 
 ```sh
-sync_modules/git_new.py -l my_new_tool
-sync_modules/git_new.py -l "my new tool in:name"
-sync_modules/git_new.py -l -L 10 "mytool in:name stars:>5"
+sync_modules.py new -l my_new_tool
+sync_modules.py new -l "my new tool in:name"
+sync_modules.py new -l -L 10 "mytool in:name stars:>5"
 ```
 
 This is useful for trying out projected names and choosing one that is
@@ -89,5 +93,18 @@ archived:false
 Use `--dry-run` to see the `gh` command without creating anything:
 
 ```sh
-sync_modules/git_new.py --dry-run my_new_tool
+sync_modules.py new --dry-run my_new_tool
 ```
+
+## Cloning repositories
+
+Clone a sibling repository using the GitHub owner and URL style inferred from
+an existing workspace clone:
+
+```sh
+sync_modules.py clone project_name
+```
+
+Use `clone --list` to list repositories for the inferred owner and
+`clone --all` to clone every repository that is not already present locally.
+`clone-all` remains as a shorthand for `clone --all`.
