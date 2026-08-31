@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -62,8 +63,8 @@ class Remote:
 
 def print_command(args, cwd=None):
     """Print a shell-style representation of a command."""
-    prefix = f"(cd {shlex.quote(cwd)} && " if cwd else "("
-    print(prefix + " ".join(shlex.quote(arg) for arg in args) + ")")
+    prefix = f"(cd {shlex.quote(str(cwd))} && " if cwd else "("
+    print(prefix + " ".join(shlex.quote(str(arg)) for arg in args) + ")")
 
 
 def run_command(args, cwd=None, capture=False, check=True, dry_run=False):
@@ -76,7 +77,7 @@ def run_command(args, cwd=None, capture=False, check=True, dry_run=False):
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     result = subprocess.run(args, cwd=cwd, **kwargs)
     if check and result.returncode != 0:
-        command = " ".join(args)
+        command = " ".join(map(str, args))
         if capture and result.stderr:
             raise RuntimeError(f"Command failed: {command}\n{result.stderr.strip()}")
         raise RuntimeError(f"Command failed: {command}")
@@ -116,16 +117,16 @@ def get_remote_url(repo_dir):
 
 def find_remote(start_dir):
     """Find and parse a GitHub remote in a directory or direct child."""
+    start_dir = Path(start_dir)
     candidates = []
-    if os.path.isdir(os.path.join(start_dir, ".git")):
+    if (start_dir / ".git").is_dir():
         candidates.append(start_dir)
     try:
-        entries = sorted(os.listdir(start_dir))
+        entries = sorted(start_dir.iterdir(), key=lambda path: path.name)
     except OSError as exc:
         raise RuntimeError(f"Cannot inspect '{start_dir}': {exc}") from exc
-    for entry in entries:
-        path = os.path.join(start_dir, entry)
-        if os.path.isdir(os.path.join(path, ".git")):
+    for path in entries:
+        if (path / ".git").is_dir():
             candidates.append(path)
     for repo_dir in candidates:
         url = get_remote_url(repo_dir)
@@ -149,8 +150,8 @@ def list_remote_projects(remote):
 def clone_project(remote, project, work_dir):
     """Clone one project unless its target already exists."""
     validate_project_name(project, allow_owner=False)
-    target = os.path.join(work_dir, project)
-    if os.path.exists(target):
+    target = Path(work_dir) / project
+    if target.exists():
         print(f"Skipping {project} (already exists)")
         return
     url = remote.url_for_project(project)
@@ -160,7 +161,7 @@ def clone_project(remote, project, work_dir):
 
 def run_clone_command(options, default_workspace):
     """Implement the clone subcommand."""
-    work_dir = os.path.abspath(default_workspace)
+    work_dir = Path(default_workspace).resolve()
     remote = find_remote(work_dir)
     if remote is None:
         raise RuntimeError(f"Found no GitHub remote in '{work_dir}' or its direct subdirectories.")
@@ -205,9 +206,9 @@ def configure_upstream(clone_dir, remote_name, dry_run=False):
 
 def run_new_command(options, default_workspace):
     """Create or search for a GitHub repository."""
-    work_dir = os.path.abspath(default_workspace)
+    work_dir = Path(default_workspace).resolve()
     validate_project_name(options.project)
-    if not os.path.isdir(work_dir):
+    if not work_dir.is_dir():
         raise RuntimeError(f"Workspace directory does not exist: '{work_dir}'.")
     if options.list_existing_projects:
         if options.limit <= 0:
@@ -228,8 +229,8 @@ def run_new_command(options, default_workspace):
             if options.verbose:
                 print(f"Inferred owner '{owner}' from remote '{remote.url}'.")
     full_name = options.project if "/" in options.project or not owner else f"{owner}/{options.project}"
-    clone_dir = os.path.join(work_dir, full_name.rsplit("/", 1)[-1])
-    if os.path.exists(clone_dir):
+    clone_dir = work_dir / full_name.rsplit("/", 1)[-1]
+    if clone_dir.exists():
         raise RuntimeError(f"Clone target already exists: '{clone_dir}'.")
     if shutil.which("gh") is None and not options.dry_run:
         raise RuntimeError("Cannot create repository because 'gh' is not installed.")
@@ -256,42 +257,68 @@ def run_new_command(options, default_workspace):
     run_command(command, cwd=work_dir, dry_run=options.dry_run)
     configure_upstream(clone_dir, options.remote or "origin", dry_run=options.dry_run)
 
+@dataclass(frozen=True)
 class SharedFile:
     """Path, basename and content of an existing file in the filesystem."""
 
-    def __init__(self, path):
-        """Store path, basename and file content of an existing file."""
-        self.path = path
-        self.basename = os.path.basename(path)
-        self.content = ""
-        self.hash = ""
-        with open(path, "rb") as file:
-            self.content = file.read()
-            self.hash = hashlib.sha256(self.content).hexdigest()
+    path: Path
+    content: bytes
+    digest: str
+
+    @classmethod
+    def load(cls, path):
+        path = Path(path)
+        content = path.read_bytes()
+        return cls(path, content, hashlib.sha256(content).hexdigest())
+
+    @property
+    def basename(self):
+        return self.path.name
+
+
+@dataclass(frozen=True)
+class FileVariant:
+    """Different contents found for copies of one shared filename."""
+
+    name: str
+    files_by_content: dict
+    newest: SharedFile
+    others: list
+
+    @property
+    def files(self):
+        return [file for files in self.files_by_content.values() for file in files]
 
 
 def add_file(files, path, accepted_extensions, filename_filter):
-    """Add file to files if it has an accepted extension.
-    """
-    ext = os.path.splitext(path)[1][1:]
+    """Add a file when its extension and basename are accepted."""
+    path = Path(path)
+    ext = path.suffix.lstrip(".")
     if ext not in accepted_extensions:
         return
-    basename = os.path.basename(path)
-    if filename_filter:
-        if not re.fullmatch(filename_filter, basename):
-            return
-    files.append(SharedFile(path))
+    if filename_filter and not re.fullmatch(filename_filter, path.name):
+        return
+    files.append(SharedFile.load(path))
 
 
 def add_dir(files, path, accepted_extensions, filename_filter, excluded_names):
-    """Add all files in dir, recursively.
-    """
+    """Add accepted files below a directory recursively."""
     for walk_path, walk_dirs, walk_files in os.walk(path):
         walk_dirs[:] = [d for d in walk_dirs if d not in excluded_names]
         for f in walk_files:
             if f in excluded_names:
                 continue
-            add_file(files, os.path.join(walk_path, f), accepted_extensions, filename_filter)
+            add_file(files, Path(walk_path) / f, accepted_extensions, filename_filter)
+
+
+def collect_files(project_paths, accepted_extensions, filename_filter, excluded_names):
+    """Collect accepted files from discovered project directories."""
+    files = []
+    for path in map(Path, project_paths):
+        if not path.is_dir():
+            raise RuntimeError(f"Discovered project path is not a directory: '{path}'")
+        add_dir(files, path, accepted_extensions, filename_filter, excluded_names)
+    return files
 
 
 def print_diff(file_a, file_b):
@@ -302,8 +329,8 @@ def print_diff(file_a, file_b):
     diff = difflib.unified_diff(
         a_text,
         b_text,
-        fromfile=file_a.path,
-        tofile=file_b.path,
+        fromfile=str(file_a.path),
+        tofile=str(file_b.path),
     )
     for line in diff:
         sys.stdout.write(line)
@@ -316,28 +343,16 @@ def copy_file(source_file, target_file):
     shutil.copy2(source_file.path, target_file.path)
 
 
-def get_newest_and_other(variants):
-    """Return a tuple containing the newest file and all other files."""
-    newest = None
-    newest_mtime = None
-    other = []
-    for files in variants.values():
-        for file in files:
-            mtime = os.path.getmtime(file.path)
-            if newest is None or mtime > newest_mtime:
-                if newest is not None:
-                    other.append(newest)
-                newest = file
-                newest_mtime = mtime
-            else:
-                other.append(file)
-    return (newest, other)
+def get_newest_and_other(files):
+    """Return the newest file and every other file."""
+    newest = max(files, key=lambda file: file.path.stat().st_mtime)
+    return newest, [file for file in files if file is not newest]
 
 
 def get_unique_hash_prefixes(files, min_len=4):
     """Return a map of full hash to smallest unique prefix.
     """
-    hashes = sorted(set(f.hash for f in files))
+    hashes = sorted(set(file.digest for file in files))
     prefix_map = {}
     for h in hashes:
         for length in range(min_len, len(h) + 1):
@@ -348,6 +363,80 @@ def get_unique_hash_prefixes(files, min_len=4):
         else:
             prefix_map[h] = h
     return prefix_map
+
+
+def find_variants(files):
+    """Group shared files into synchronized names and differing variants."""
+    files_by_name = {}
+    for file in files:
+        files_by_name.setdefault(file.basename, []).append(file)
+
+    in_sync = []
+    variants = []
+    for name, matching_files in sorted(files_by_name.items()):
+        if len(matching_files) < 2:
+            continue
+        files_by_content = {}
+        for file in matching_files:
+            files_by_content.setdefault(file.content, []).append(file)
+        if len(files_by_content) == 1:
+            in_sync.append((name, len(matching_files)))
+            continue
+        newest, others = get_newest_and_other(matching_files)
+        variants.append(FileVariant(name, files_by_content, newest, others))
+    return in_sync, variants
+
+
+def report_variants(in_sync, variants):
+    """Print synchronization status for analyzed shared files."""
+    for name, count in in_sync:
+        print(f"(File {name} is in sync across {count} files.)")
+    for variant in variants:
+        hash_prefixes = get_unique_hash_prefixes(variant.files)
+        print(f"File {variant.name} exists in {len(variant.files_by_content)} variants:")
+        for content, files in sorted(variant.files_by_content.items(), key=lambda item: len(item[0])):
+            for file in files:
+                date = datetime.datetime.fromtimestamp(
+                    file.path.stat().st_mtime, tz=datetime.timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%S")
+                source = " (sync-source)" if file is variant.newest else ""
+                print(
+                    f"    hash={hash_prefixes[file.digest]} len={len(file.content):6d} "
+                    f"date={date} {file.path}{source}"
+                )
+
+
+def print_variant_diffs(variants):
+    """Print each distinct older content compared with its newest copy."""
+    for variant in variants:
+        files_by_content = {}
+        for file in variant.others:
+            files_by_content.setdefault(file.content, []).append(file)
+        for files in files_by_content.values():
+            for file in files:
+                print(f"diff -u {file.path} {variant.newest.path}")
+            print_diff(files[0], variant.newest)
+
+
+def synchronize_variants(variants, check_git, verbose):
+    """Validate targets and copy the newest content to every older copy."""
+    if check_git:
+        git_error = False
+        for variant in variants:
+            for file in variant.others:
+                ok, message = check_git_clean_for_file(file)
+                if verbose:
+                    print(f"Git status for {file.path}: {'clean' if ok else 'modified'}")
+                if not ok:
+                    print(f"Error: {message}")
+                    git_error = True
+        if git_error:
+            print("Error: Aborting sync due to git check failures.")
+            return 1
+    for variant in variants:
+        for file in variant.others:
+            copy_file(variant.newest, file)
+    return 0
 
 def get_repository_roots(project_paths):
     """Resolve repository roots once for the scanned project paths."""
@@ -388,7 +477,7 @@ def get_last_commit_message(repo_root):
 def check_git_clean_for_file(file):
     """Check whether the file itself is clean in its git repo.
     """
-    repo_dir = os.path.dirname(file.path)
+    repo_dir = file.path.parent
     result = run_command(
         ["git", "-C", repo_dir, "rev-parse", "--show-toplevel"],
         capture=True,
@@ -397,7 +486,7 @@ def check_git_clean_for_file(file):
     if result.returncode != 0:
         return (False, f"'{repo_dir}' is not in a git repo.")
     repo_root = result.stdout.strip()
-    relpath = os.path.relpath(file.path, repo_root)
+    relpath = file.path.relative_to(repo_root)
     status = run_command(
         [
             "git",
@@ -421,25 +510,26 @@ def check_git_clean_for_file(file):
 def get_projects(workspace, accepted_extensions, excluded_names):
     """Return immediate child projects containing accepted source files."""
     projects = []
+    workspace = Path(workspace)
     accepted_extensions = {extension.lstrip(".") for extension in accepted_extensions}
     ignored = {".git", ".svn", "__pycache__", "build", *excluded_names}
     try:
-        children = sorted(os.scandir(workspace), key=lambda entry: entry.name)
+        children = sorted(workspace.iterdir(), key=lambda path: path.name)
     except OSError as e:
         raise RuntimeError(f"Cannot scan workspace '{workspace}': {e}")
     for child in children:
         if (
-            not child.is_dir(follow_symlinks=True)
+            not child.is_dir()
             or child.name.startswith(".")
             or child.name in ignored
         ):
             continue
         found = False
-        for _, dirs, files in os.walk(child.path):
+        for _, dirs, files in os.walk(child):
             dirs[:] = [name for name in dirs if name not in ignored and not name.startswith(".")]
             if any(
                 name not in ignored
-                and os.path.splitext(name)[1].lstrip(".") in accepted_extensions
+                and Path(name).suffix.lstrip(".") in accepted_extensions
                 for name in files
             ):
                 found = True
@@ -452,114 +542,21 @@ def get_projects(workspace, accepted_extensions, excluded_names):
 def run_sync_operation(options):
     """Compare or synchronize shared files in the scanned projects."""
     try:
-        # Read all files and dirs.
-        all_files = []
-        for path in options.project_paths:
-            if os.path.isdir(path):
-                add_dir(
-                    all_files, path, options.extensions, options.filter,
-                    options.exclude,
-                )
-            else:
-                raise RuntimeError(f"Discovered project path is not a directory: '{path}'")
-
-        # Build basename to file list map.
-        files_by_name = {}
-        for f in all_files:
-            if f.basename not in files_by_name:
-                files_by_name[f.basename] = [f]
-            else:
-                files_by_name[f.basename].append(f)
-
-        # Build file set variants.
-        in_sync_names = []
-        variant_sets = []
-        for name, matching_files in sorted(files_by_name.items()):
-            if len(matching_files) < 2:
-                continue
-
-            # Build hash to file list map.
-            files_by_content = {}
-            for file in matching_files:
-                if file.content not in files_by_content:
-                    files_by_content[file.content] = [file]
-                else:
-                    files_by_content[file.content].append(file)
-
-            if len(files_by_content) == 1:
-                in_sync_names.append((name, len(matching_files)))
-                continue
-
-            newest, other = get_newest_and_other(files_by_content)
-            variant_sets.append(
-                {
-                    "name": name,
-                    "hash_to_files": files_by_content,
-                    "newest": newest,
-                    "other": other,
-                }
-            )
-
-        for name, count in in_sync_names:
-            print(f"(File {name} is in sync across {count} files.)")
-
-        for entry in variant_sets:
-            variant_files = []
-            for files in entry["hash_to_files"].values():
-                variant_files.extend(files)
-            hash_prefixes = get_unique_hash_prefixes(variant_files)
-            print(f"File {entry['name']} exists in {len(entry['hash_to_files'])} variants:")
-            for content in sorted(entry["hash_to_files"], key=len):
-                files = entry["hash_to_files"][content]
-                for file in files:
-                    mtime = os.path.getmtime(file.path)
-                    date = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-                    sync_source = " (sync-source)" if file.path == entry["newest"].path else ""
-                    print(f"    hash={hash_prefixes[file.hash]} len={len(file.content):6d} date={date} {file.path}{sync_source}")
-
-        if options.command == "status" and not variant_sets:
+        files = collect_files(
+            options.project_paths, options.extensions, options.filter, options.exclude
+        )
+        in_sync, variants = find_variants(files)
+        report_variants(in_sync, variants)
+        if options.command == "status" and not variants:
             print("All shared files are in sync; sync_modules.py sync would copy nothing.")
-
         if options.command == "diff":
-            for entry in variant_sets:
-                content_to_files = {}
-                for file in entry["other"]:
-                    if file.content not in content_to_files:
-                        content_to_files[file.content] = [file]
-                    else:
-                        content_to_files[file.content].append(file)
-                for files in content_to_files.values():
-                    for file in files:
-                        print(f"diff -u {file.path} {entry['newest'].path}")
-                    print_diff(files[0], entry["newest"])
-
-        git_error = False
-        if not options.no_git_check:
-            for entry in variant_sets:
-                for file in entry["other"]:
-                    ok, message = check_git_clean_for_file(file)
-                    if options.verbose:
-                        status = "clean" if ok else "modified"
-                        print(f"Git status for {file.path}: {status}")
-                    if not ok:
-                        if options.command == "sync":
-                            print(f"Error: {message}")
-                            git_error = True
-                        else:
-                            print(f"Warning: {message}")
-
-        if options.command == "sync" and git_error:
-            print("Error: Aborting --sync due to git check failures.")
-            sys.exit(1)
-
+            print_variant_diffs(variants)
         if options.command == "sync":
-            for entry in variant_sets:
-                for file in entry["other"]:
-                    copy_file(entry["newest"], file)
-
-
+            return synchronize_variants(
+                variants, check_git=not options.no_git_check, verbose=options.verbose
+            )
     except RuntimeError as e:
-        print("Error: {}".format(str(e)))
+        print(f"Error: {e}")
         return 1
     return 0
 
@@ -575,18 +572,18 @@ def run_git_for_repositories(repo_roots, git_args):
     return return_code
 
 
+GIT_COMMANDS = {
+    "git-status": ["status", "--short", "--branch", "--untracked-files=no"],
+    "git-diff": ["--no-pager", "diff"],
+    "pull": ["pull", "--rebase"],
+    "push": ["push"],
+}
+
+
 def run_git_operation(command, repo_roots):
     """Run one Git maintenance command on precomputed repositories."""
-    if command == "git-status":
-        return run_git_for_repositories(
-            repo_roots, ["status", "--short", "--branch", "--untracked-files=no"]
-        )
-    if command == "git-diff":
-        return run_git_for_repositories(repo_roots, ["--no-pager", "diff"])
-    if command in ("pull", "push"):
-        git_args = ["pull", "--rebase"] if command == "pull" else ["push"]
-        return run_git_for_repositories(repo_roots, git_args)
-
+    if command in GIT_COMMANDS:
+        return run_git_for_repositories(repo_roots, GIT_COMMANDS[command])
     if command != "commit":
         raise RuntimeError(f"Unsupported Git operation: {command}")
 
@@ -647,7 +644,7 @@ def run_project_commands(command, projects, workspace, jobs):
         argv = ["make"]
         if command in ("unit-test", "clean"):
             argv += ["-j", str(jobs)]
-        argv += ["-C", os.path.join(workspace, project)]
+        argv += ["-C", str(Path(workspace) / project)]
         if target:
             argv.append(target)
         commands.append((argv, workspace))
@@ -718,44 +715,38 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def main():
-    options = parse_arguments()
-    try:
-        config = load_config(options.config)
-    except RuntimeError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-    workspace = options.workspace or config["workspace"]
-    if not os.path.isabs(workspace):
-        workspace = os.path.abspath(os.path.join(os.path.dirname(options.config), workspace))
-    jobs = config["jobs"] or (os.cpu_count() or 1)
+def resolve_workspace(options, config):
+    """Resolve the configured or command-line workspace path."""
+    workspace = Path(options.workspace or config["workspace"])
+    if not workspace.is_absolute():
+        workspace = Path(options.config).resolve().parent / workspace
+    return workspace.resolve()
 
-    try:
-        if options.command == "clone":
-            if not options.list and not options.all and not options.project:
-                raise RuntimeError("Specify PROJECT, --list, or --all.")
-            if options.project and (options.list or options.all):
-                raise RuntimeError("PROJECT, --list, and --all are mutually exclusive.")
-            run_clone_command(options, workspace)
-            return 0
-        if options.command == "new":
-            run_new_command(options, workspace)
-            return 0
-        projects = get_projects(workspace, config["extensions"], config["exclude"])
-        project_paths = [os.path.join(workspace, project) for project in projects]
-        if options.command in ("build", "unit-test", "clean"):
-            projects = [
-                project for project in projects
-                if os.path.isfile(os.path.join(workspace, project, "Makefile"))
-            ]
-            return run_project_commands(options.command, projects, workspace, jobs)
-        git_commands = ("commit", "pull", "push", "git-diff", "git-status")
-        if options.command in git_commands:
-            repo_roots = get_repository_roots(project_paths)
-            return run_git_operation(options.command, repo_roots)
-    except RuntimeError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+
+def run_workspace_command(options, config, workspace):
+    """Discover projects and dispatch one workspace command."""
+    jobs = config["jobs"] or (os.cpu_count() or 1)
+    if options.command == "clone":
+        if not options.list and not options.all and not options.project:
+            raise RuntimeError("Specify PROJECT, --list, or --all.")
+        if options.project and (options.list or options.all):
+            raise RuntimeError("PROJECT, --list, and --all are mutually exclusive.")
+        run_clone_command(options, workspace)
+        return 0
+    if options.command == "new":
+        run_new_command(options, workspace)
+        return 0
+
+    projects = get_projects(workspace, config["extensions"], config["exclude"])
+    project_paths = [workspace / project for project in projects]
+    if options.command in ("build", "unit-test", "clean"):
+        build_projects = [
+            project for project in projects
+            if (workspace / project / "Makefile").is_file()
+        ]
+        return run_project_commands(options.command, build_projects, workspace, jobs)
+    if options.command in ("commit", *GIT_COMMANDS):
+        return run_git_operation(options.command, get_repository_roots(project_paths))
 
     operation = argparse.Namespace(
         project_paths=project_paths,
@@ -763,10 +754,21 @@ def main():
         extensions=config["extensions"],
         filter=options.filter,
         exclude=config["exclude"],
-        no_git_check=getattr(options, "no_git_check", False) or options.command == "status",
+        no_git_check=getattr(options, "no_git_check", False),
         verbose=options.verbose,
     )
     return run_sync_operation(operation)
+
+
+def main():
+    options = parse_arguments()
+    try:
+        config = load_config(options.config)
+        workspace = resolve_workspace(options, config)
+        return run_workspace_command(options, config, workspace)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
 
 

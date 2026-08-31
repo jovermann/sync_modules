@@ -1,5 +1,8 @@
 import argparse
+import contextlib
 import importlib.util
+import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -39,6 +42,16 @@ class ConfigTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    def setUp(self):
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+        stdout_redirect = contextlib.redirect_stdout(self.stdout)
+        stderr_redirect = contextlib.redirect_stderr(self.stderr)
+        stdout_redirect.__enter__()
+        stderr_redirect.__enter__()
+        self.addCleanup(stderr_redirect.__exit__, None, None, None)
+        self.addCleanup(stdout_redirect.__exit__, None, None, None)
+
     def test_git_status_uses_precomputed_repository_roots(self):
         completed = argparse.Namespace(returncode=0)
         with mock.patch.object(sync_modules, "run_command", return_value=completed) as run:
@@ -76,8 +89,8 @@ class CommandTests(unittest.TestCase):
             mock.patch.object(sync_modules, "run_git_operation", return_value=0) as git_operation,
         ):
             self.assertEqual(sync_modules.main(), 0)
-        discover.assert_called_once_with("/workspace", ["py"], ["old"])
-        roots.assert_called_once_with(["/workspace/one", "/workspace/two"])
+        discover.assert_called_once_with(Path("/workspace"), ["py"], ["old"])
+        roots.assert_called_once_with([Path("/workspace/one"), Path("/workspace/two")])
         git_operation.assert_called_once_with("pull", ["/repo/one", "/repo/two"])
 
     def test_parse_github_remote_and_rewrite_project(self):
@@ -141,6 +154,10 @@ class CommandTests(unittest.TestCase):
                 ["gh", "repo", "create", "owner/new_repo", "--private", "--clone"],
             )
 
+    def test_command_formatting_accepts_path_objects(self):
+        sync_modules.print_command(["git", "status"], cwd=Path("/workspace"))
+        self.assertEqual(self.stdout.getvalue(), "(cd /workspace && git status)\n")
+
     def test_project_command_propagates_failure(self):
         completed = argparse.Namespace(returncode=2)
         with mock.patch.object(sync_modules, "run_command", return_value=completed) as run:
@@ -173,6 +190,40 @@ class CommandTests(unittest.TestCase):
                 sync_modules.get_projects(workspace, ["cpp", "py"], ["old"]),
                 ["cpp", "python"],
             )
+
+    def test_variant_analysis_selects_newest_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            older_path = Path(directory, "one", "module.py")
+            newer_path = Path(directory, "two", "module.py")
+            older_path.parent.mkdir()
+            newer_path.parent.mkdir()
+            older_path.write_text("old")
+            newer_path.write_text("new")
+            os.utime(older_path, (1, 1))
+            os.utime(newer_path, (2, 2))
+            files = [
+                sync_modules.SharedFile.load(older_path),
+                sync_modules.SharedFile.load(newer_path),
+            ]
+            in_sync, variants = sync_modules.find_variants(files)
+        self.assertEqual(in_sync, [])
+        self.assertEqual(len(variants), 1)
+        self.assertEqual(variants[0].newest.path, newer_path)
+
+    def test_diff_does_not_check_git_cleanliness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for project, content in (("one", "old"), ("two", "new")):
+                path = Path(directory, project, "module.py")
+                path.parent.mkdir()
+                path.write_text(content)
+            options = argparse.Namespace(
+                project_paths=[Path(directory, "one"), Path(directory, "two")],
+                command="diff", extensions=["py"], filter="", exclude=[],
+                no_git_check=False, verbose=0,
+            )
+            with mock.patch.object(sync_modules, "check_git_clean_for_file") as check:
+                self.assertEqual(sync_modules.run_sync_operation(options), 0)
+            check.assert_not_called()
 
 
 if __name__ == "__main__":
