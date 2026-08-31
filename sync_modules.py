@@ -41,13 +41,12 @@ except FileNotFoundError as exc:
 class Remote:
     """Parsed GitHub remote URL."""
 
-    def __init__(self, url, host, owner, repo):
+    def __init__(self, url, owner, repo):
         self.url = url
-        self.host = host
         self.owner = owner
         self.repo = repo
 
-    def urlForProject(self, project):
+    def url_for_project(self, project):
         """Return a remote URL like this one with a different repository name."""
         suffixes = [
             ("/" + self.repo + ".git", "/" + project + ".git"),
@@ -61,16 +60,16 @@ class Remote:
         raise RuntimeError(f"Cannot rewrite remote URL '{self.url}'.")
 
 
-def printCommand(args, cwd=None):
+def print_command(args, cwd=None):
     """Print a shell-style representation of a command."""
     prefix = f"(cd {shlex.quote(cwd)} && " if cwd else "("
     print(prefix + " ".join(shlex.quote(arg) for arg in args) + ")")
 
 
-def runCommand(args, cwd=None, capture=False, check=True, dry_run=False):
+def run_command(args, cwd=None, capture=False, check=True, dry_run=False):
     """Run a command, or print it in dry-run mode."""
     if dry_run:
-        printCommand(args, cwd=cwd)
+        print_command(args, cwd=cwd)
         return None
     kwargs = {}
     if capture:
@@ -84,7 +83,7 @@ def runCommand(args, cwd=None, capture=False, check=True, dry_run=False):
     return result
 
 
-def parseGithubRemote(url):
+def parse_github_remote(url):
     """Parse common GitHub remote URL forms."""
     patterns = [
         r"^https://([^/]+)/([^/]+)/([^/]+?)(?:\.git)?/?$",
@@ -94,18 +93,18 @@ def parseGithubRemote(url):
     for pattern in patterns:
         match = re.match(pattern, url)
         if match:
-            return Remote(url, match.group(1), match.group(2), match.group(3))
+            return Remote(url, match.group(2), match.group(3))
     return None
 
 
-def getRemoteUrl(repo_dir):
+def get_remote_url(repo_dir):
     """Return a likely fetch remote URL from a repository, or None."""
     remote_names = ["origin"]
-    remotes = runCommand(["git", "-C", repo_dir, "remote"], capture=True, check=False)
+    remotes = run_command(["git", "-C", repo_dir, "remote"], capture=True, check=False)
     if remotes.returncode == 0:
         remote_names.extend(name for name in remotes.stdout.splitlines() if name and name != "origin")
     for remote_name in remote_names:
-        result = runCommand(
+        result = run_command(
             ["git", "-C", repo_dir, "remote", "get-url", remote_name],
             capture=True,
             check=False,
@@ -115,7 +114,7 @@ def getRemoteUrl(repo_dir):
     return None
 
 
-def findRemote(start_dir):
+def find_remote(start_dir):
     """Find and parse a GitHub remote in a directory or direct child."""
     candidates = []
     if os.path.isdir(os.path.join(start_dir, ".git")):
@@ -129,54 +128,54 @@ def findRemote(start_dir):
         if os.path.isdir(os.path.join(path, ".git")):
             candidates.append(path)
     for repo_dir in candidates:
-        url = getRemoteUrl(repo_dir)
-        remote = parseGithubRemote(url) if url else None
+        url = get_remote_url(repo_dir)
+        remote = parse_github_remote(url) if url else None
         if remote:
             return remote
     return None
 
 
-def listRemoteProjects(remote):
+def list_remote_projects(remote):
     """List repositories owned by the inferred GitHub owner."""
     if shutil.which("gh") is None:
         raise RuntimeError("Cannot list projects because 'gh' is not installed.")
-    result = runCommand(
+    result = run_command(
         ["gh", "repo", "list", remote.owner, "--limit", "1000", "--json", "name", "--jq", ".[].name"],
         capture=True,
     )
     return sorted(name for name in result.stdout.splitlines() if name)
 
 
-def cloneProject(remote, project, work_dir):
+def clone_project(remote, project, work_dir):
     """Clone one project unless its target already exists."""
-    validateProjectName(project, allow_owner=False)
+    validate_project_name(project, allow_owner=False)
     target = os.path.join(work_dir, project)
     if os.path.exists(target):
         print(f"Skipping {project} (already exists)")
         return
-    url = remote.urlForProject(project)
+    url = remote.url_for_project(project)
     print(f"Cloning {url}")
-    runCommand(["git", "clone", url, project], cwd=work_dir)
+    run_command(["git", "clone", url, project], cwd=work_dir)
 
 
-def runCloneCommand(options, default_workspace):
+def run_clone_command(options, default_workspace):
     """Implement the clone subcommand."""
     work_dir = os.path.abspath(default_workspace)
-    remote = findRemote(work_dir)
+    remote = find_remote(work_dir)
     if remote is None:
         raise RuntimeError(f"Found no GitHub remote in '{work_dir}' or its direct subdirectories.")
-    projects = listRemoteProjects(remote) if options.list or options.all else []
+    projects = list_remote_projects(remote) if options.list or options.all else []
     if options.list:
         for project in projects:
             print(project)
     if options.all:
         for project in projects:
-            cloneProject(remote, project, work_dir)
+            clone_project(remote, project, work_dir)
     if options.project:
-        cloneProject(remote, options.project, work_dir)
+        clone_project(remote, options.project, work_dir)
 
 
-def validateProjectName(project, allow_owner=True):
+def validate_project_name(project, allow_owner=True):
     """Reject values which look like paths rather than repository names."""
     if project in ("", ".", ".."):
         raise RuntimeError("Repository name must not be empty, '.', or '..'.")
@@ -192,22 +191,22 @@ def validateProjectName(project, allow_owner=True):
         raise RuntimeError("Repository owner and name must not be empty, '.', or '..'.")
 
 
-def configureUpstream(clone_dir, remote_name, dry_run=False):
+def configure_upstream(clone_dir, remote_name, dry_run=False):
     """Configure an initial branch to track its same-named remote branch."""
     branch = "main"
     if not dry_run:
-        result = runCommand(["git", "-C", clone_dir, "symbolic-ref", "--short", "HEAD"], capture=True)
+        result = run_command(["git", "-C", clone_dir, "symbolic-ref", "--short", "HEAD"], capture=True)
         branch = result.stdout.strip()
         if not branch:
             raise RuntimeError(f"Cannot determine the initial branch in '{clone_dir}'.")
-    runCommand(["git", "config", f"branch.{branch}.remote", remote_name], cwd=clone_dir, dry_run=dry_run)
-    runCommand(["git", "config", f"branch.{branch}.merge", f"refs/heads/{branch}"], cwd=clone_dir, dry_run=dry_run)
+    run_command(["git", "config", f"branch.{branch}.remote", remote_name], cwd=clone_dir, dry_run=dry_run)
+    run_command(["git", "config", f"branch.{branch}.merge", f"refs/heads/{branch}"], cwd=clone_dir, dry_run=dry_run)
 
 
-def runNewCommand(options, default_workspace):
+def run_new_command(options, default_workspace):
     """Create or search for a GitHub repository."""
     work_dir = os.path.abspath(default_workspace)
-    validateProjectName(options.project)
+    validate_project_name(options.project)
     if not os.path.isdir(work_dir):
         raise RuntimeError(f"Workspace directory does not exist: '{work_dir}'.")
     if options.list_existing_projects:
@@ -215,7 +214,7 @@ def runNewCommand(options, default_workspace):
             raise RuntimeError("--limit must be greater than zero.")
         if shutil.which("gh") is None and not options.dry_run:
             raise RuntimeError("Cannot search repositories because 'gh' is not installed.")
-        runCommand(
+        run_command(
             ["gh", "search", "repos", "--limit", str(options.limit), "--", options.project],
             dry_run=options.dry_run,
         )
@@ -223,7 +222,7 @@ def runNewCommand(options, default_workspace):
 
     owner = options.owner
     if not owner and "/" not in options.project:
-        remote = findRemote(work_dir)
+        remote = find_remote(work_dir)
         if remote:
             owner = remote.owner
             if options.verbose:
@@ -253,17 +252,15 @@ def runNewCommand(options, default_workspace):
     if options.dry_run and not owner and "/" not in options.project:
         print("No owner inferred; gh will use the authenticated account default.")
     if options.verbose and not options.dry_run:
-        printCommand(command, cwd=work_dir)
-    runCommand(command, cwd=work_dir, dry_run=options.dry_run)
-    configureUpstream(clone_dir, options.remote or "origin", dry_run=options.dry_run)
+        print_command(command, cwd=work_dir)
+    run_command(command, cwd=work_dir, dry_run=options.dry_run)
+    configure_upstream(clone_dir, options.remote or "origin", dry_run=options.dry_run)
 
-class File:
-    """Path, basename and content of an existing file in the filesystem.
-    """
+class SharedFile:
+    """Path, basename and content of an existing file in the filesystem."""
 
     def __init__(self, path):
-        """Store path, basename and file content of an existing file.
-        """
+        """Store path, basename and file content of an existing file."""
         self.path = path
         self.basename = os.path.basename(path)
         self.content = ""
@@ -273,7 +270,7 @@ class File:
             self.hash = hashlib.sha256(self.content).hexdigest()
 
 
-def addFile(files, path, accepted_extensions, filename_filter):
+def add_file(files, path, accepted_extensions, filename_filter):
     """Add file to files if it has an accepted extension.
     """
     ext = os.path.splitext(path)[1][1:]
@@ -283,21 +280,21 @@ def addFile(files, path, accepted_extensions, filename_filter):
     if filename_filter:
         if not re.fullmatch(filename_filter, basename):
             return
-    files.append(File(path))
+    files.append(SharedFile(path))
 
 
-def addDir(files, path, accepted_extensions, filename_filter, excluded_names):
+def add_dir(files, path, accepted_extensions, filename_filter, excluded_names):
     """Add all files in dir, recursively.
     """
-    for walkpath, walkdirs, walkfiles in os.walk(path):
-        walkdirs[:] = [d for d in walkdirs if d not in excluded_names]
-        for f in walkfiles:
+    for walk_path, walk_dirs, walk_files in os.walk(path):
+        walk_dirs[:] = [d for d in walk_dirs if d not in excluded_names]
+        for f in walk_files:
             if f in excluded_names:
                 continue
-            addFile(files, os.path.join(walkpath, f), accepted_extensions, filename_filter)
+            add_file(files, os.path.join(walk_path, f), accepted_extensions, filename_filter)
 
 
-def printDiff(file_a, file_b):
+def print_diff(file_a, file_b):
     """Print diff.
     """
     a_text = file_a.content.decode("utf-8", errors="replace").splitlines(keepends=True)
@@ -312,20 +309,19 @@ def printDiff(file_a, file_b):
         sys.stdout.write(line)
 
 
-def copyFile(fromPath, toPath):
+def copy_file(source_file, target_file):
     """Copy file.
     """
-    print(f"Copying {fromPath.path} -> {toPath.path}")
-    shutil.copy2(fromPath.path, toPath.path)
+    print(f"Copying {source_file.path} -> {target_file.path}")
+    shutil.copy2(source_file.path, target_file.path)
 
 
-def getNewestAndOther(map):
-    """Return a tuple (newestFile, listOfOtherFiles).
-    """
+def get_newest_and_other(variants):
+    """Return a tuple containing the newest file and all other files."""
     newest = None
     newest_mtime = None
     other = []
-    for files in map.values():
+    for files in variants.values():
         for file in files:
             mtime = os.path.getmtime(file.path)
             if newest is None or mtime > newest_mtime:
@@ -338,12 +334,7 @@ def getNewestAndOther(map):
     return (newest, other)
 
 
-def getSmallestFile(map):
-    """Get smallest file in map.
-    """
-    return map[min(map, key=len)]
-
-def getUniqueHashPrefixes(files, min_len=4):
+def get_unique_hash_prefixes(files, min_len=4):
     """Return a map of full hash to smallest unique prefix.
     """
     hashes = sorted(set(f.hash for f in files))
@@ -358,60 +349,56 @@ def getUniqueHashPrefixes(files, min_len=4):
             prefix_map[h] = h
     return prefix_map
 
-def getRepositoryRoots(project_paths):
+def get_repository_roots(project_paths):
     """Resolve repository roots once for the scanned project paths."""
     roots = set()
     for path in project_paths:
-        result = subprocess.run(
+        result = run_command(
             ["git", "-C", path, "rev-parse", "--show-toplevel"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
+            capture=True,
+            check=False,
         )
         if result.returncode == 0:
             roots.add(result.stdout.strip())
     return sorted(roots)
 
-def repoHasModifications(repo_root):
+def repo_has_modifications(repo_root):
     """Return True if repo has tracked changes (staged or unstaged), ignoring untracked files."""
-    status = subprocess.run(
+    status = run_command(
         ["git", "-C", repo_root, "status", "--porcelain", "--untracked-files=no"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
+        capture=True,
+        check=False,
     )
     if status.returncode != 0:
         return False
     return bool(status.stdout.strip())
 
-def getLastCommitMessage(repo_root):
+def get_last_commit_message(repo_root):
     """Return the last commit message for the repo.
     """
-    result = subprocess.run(
+    result = run_command(
         ["git", "-C", repo_root, "log", "-1", "--pretty=%B"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
+        capture=True,
+        check=False,
     )
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
 
-def checkGitCleanForFile(file):
+def check_git_clean_for_file(file):
     """Check whether the file itself is clean in its git repo.
     """
     repo_dir = os.path.dirname(file.path)
-    result = subprocess.run(
+    result = run_command(
         ["git", "-C", repo_dir, "rev-parse", "--show-toplevel"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
+        capture=True,
+        check=False,
     )
     if result.returncode != 0:
         return (False, f"'{repo_dir}' is not in a git repo.")
     repo_root = result.stdout.strip()
     relpath = os.path.relpath(file.path, repo_root)
-    status = subprocess.run(
+    status = run_command(
         [
             "git",
             "-C",
@@ -422,9 +409,8 @@ def checkGitCleanForFile(file):
             "--",
             relpath,
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
+        capture=True,
+        check=False,
     )
     if status.returncode != 0:
         return (False, f"Failed to check git status in '{repo_root}'.")
@@ -432,7 +418,7 @@ def checkGitCleanForFile(file):
         return (False, f"File '{file.path}' has local changes.")
     return (True, "")
 
-def getProjects(workspace, accepted_extensions, excluded_names):
+def get_projects(workspace, accepted_extensions, excluded_names):
     """Return immediate child projects containing accepted source files."""
     projects = []
     accepted_extensions = {extension.lstrip(".") for extension in accepted_extensions}
@@ -463,52 +449,52 @@ def getProjects(workspace, accepted_extensions, excluded_names):
     return projects
 
 
-def runSyncOperation(options):
+def run_sync_operation(options):
     """Compare or synchronize shared files in the scanned projects."""
     try:
         # Read all files and dirs.
-        fileListAll = []
+        all_files = []
         for path in options.project_paths:
             if os.path.isdir(path):
-                addDir(
-                    fileListAll, path, options.extensions, options.filter,
+                add_dir(
+                    all_files, path, options.extensions, options.filter,
                     options.exclude,
                 )
             else:
                 raise RuntimeError(f"Discovered project path is not a directory: '{path}'")
 
         # Build basename to file list map.
-        name2fileList = {}
-        for f in fileListAll:
-            if f.basename not in name2fileList:
-                name2fileList[f.basename] = [f]
+        files_by_name = {}
+        for f in all_files:
+            if f.basename not in files_by_name:
+                files_by_name[f.basename] = [f]
             else:
-                name2fileList[f.basename].append(f)
+                files_by_name[f.basename].append(f)
 
         # Build file set variants.
         in_sync_names = []
         variant_sets = []
-        for name, fileList in sorted(name2fileList.items()):
-            if len(fileList) < 2:
+        for name, matching_files in sorted(files_by_name.items()):
+            if len(matching_files) < 2:
                 continue
 
             # Build hash to file list map.
-            hashToFiles = {}
-            for file in fileList:
-                if file.content not in hashToFiles:
-                    hashToFiles[file.content] = [file]
+            files_by_content = {}
+            for file in matching_files:
+                if file.content not in files_by_content:
+                    files_by_content[file.content] = [file]
                 else:
-                    hashToFiles[file.content].append(file)
+                    files_by_content[file.content].append(file)
 
-            if len(hashToFiles) == 1:
-                in_sync_names.append((name, len(fileList)))
+            if len(files_by_content) == 1:
+                in_sync_names.append((name, len(matching_files)))
                 continue
 
-            newest, other = getNewestAndOther(hashToFiles)
+            newest, other = get_newest_and_other(files_by_content)
             variant_sets.append(
                 {
                     "name": name,
-                    "hash_to_files": hashToFiles,
+                    "hash_to_files": files_by_content,
                     "newest": newest,
                     "other": other,
                 }
@@ -518,13 +504,13 @@ def runSyncOperation(options):
             print(f"(File {name} is in sync across {count} files.)")
 
         for entry in variant_sets:
-            all_files = []
+            variant_files = []
             for files in entry["hash_to_files"].values():
-                all_files.extend(files)
-            hash_prefixes = getUniqueHashPrefixes(all_files)
+                variant_files.extend(files)
+            hash_prefixes = get_unique_hash_prefixes(variant_files)
             print(f"File {entry['name']} exists in {len(entry['hash_to_files'])} variants:")
-            for hash in sorted(entry["hash_to_files"], key=len):
-                files = entry["hash_to_files"][hash]
+            for content in sorted(entry["hash_to_files"], key=len):
+                files = entry["hash_to_files"][content]
                 for file in files:
                     mtime = os.path.getmtime(file.path)
                     date = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -545,21 +531,19 @@ def runSyncOperation(options):
                 for files in content_to_files.values():
                     for file in files:
                         print(f"diff -u {file.path} {entry['newest'].path}")
-                    printDiff(files[0], entry["newest"])
+                    print_diff(files[0], entry["newest"])
 
-        blocked_paths = set()
         git_error = False
         if not options.no_git_check:
             for entry in variant_sets:
                 for file in entry["other"]:
-                    ok, message = checkGitCleanForFile(file)
+                    ok, message = check_git_clean_for_file(file)
                     if options.verbose:
                         status = "clean" if ok else "modified"
                         print(f"Git status for {file.path}: {status}")
                     if not ok:
                         if options.command == "sync":
                             print(f"Error: {message}")
-                            blocked_paths.add(file.path)
                             git_error = True
                         else:
                             print(f"Warning: {message}")
@@ -571,9 +555,7 @@ def runSyncOperation(options):
         if options.command == "sync":
             for entry in variant_sets:
                 for file in entry["other"]:
-                    if file.path in blocked_paths:
-                        continue
-                    copyFile(entry["newest"], file)
+                    copy_file(entry["newest"], file)
 
 
     except RuntimeError as e:
@@ -582,33 +564,28 @@ def runSyncOperation(options):
     return 0
 
 
-def runGitOperation(command, repo_roots):
+def run_git_for_repositories(repo_roots, git_args):
+    """Run the same Git command in each repository and aggregate failures."""
+    return_code = 0
+    for repo_root in repo_roots:
+        print(f"Running git {' '.join(git_args)} in {repo_root}")
+        result = run_command(["git", "-C", repo_root, *git_args], check=False)
+        if result.returncode != 0:
+            return_code = 1
+    return return_code
+
+
+def run_git_operation(command, repo_roots):
     """Run one Git maintenance command on precomputed repositories."""
     if command == "git-status":
-        return_code = 0
-        for repo_root in repo_roots:
-            print(f"Running git status in {repo_root}")
-            if subprocess.run([
-                "git", "-C", repo_root, "status", "--short", "--branch",
-                "--untracked-files=no",
-            ]).returncode != 0:
-                return_code = 1
-        return return_code
+        return run_git_for_repositories(
+            repo_roots, ["status", "--short", "--branch", "--untracked-files=no"]
+        )
     if command == "git-diff":
-        return_code = 0
-        for repo_root in repo_roots:
-            print(f"Running git diff in {repo_root}")
-            if subprocess.run(["git", "-C", repo_root, "--no-pager", "diff"]).returncode != 0:
-                return_code = 1
-        return return_code
+        return run_git_for_repositories(repo_roots, ["--no-pager", "diff"])
     if command in ("pull", "push"):
         git_args = ["pull", "--rebase"] if command == "pull" else ["push"]
-        return_code = 0
-        for repo_root in repo_roots:
-            print(f"Running git {' '.join(git_args)} in {repo_root}")
-            if subprocess.run(["git", "-C", repo_root, *git_args]).returncode != 0:
-                return_code = 1
-        return return_code
+        return run_git_for_repositories(repo_roots, git_args)
 
     if command != "commit":
         raise RuntimeError(f"Unsupported Git operation: {command}")
@@ -616,23 +593,24 @@ def runGitOperation(command, repo_roots):
     commit_message_file = None
     try:
         for repo_root in repo_roots:
-            if not repoHasModifications(repo_root):
+            if not repo_has_modifications(repo_root):
                 print(f"Skipping commit in {repo_root} (no modifications)")
                 continue
             print(f"Running git commit -a in {repo_root}")
             if commit_message_file is None:
-                result = subprocess.run(["git", "-C", repo_root, "commit", "-a"])
+                result = run_command(["git", "-C", repo_root, "commit", "-a"], check=False)
                 if result.returncode != 0:
                     return 1
-                commit_message = getLastCommitMessage(repo_root)
+                commit_message = get_last_commit_message(repo_root)
                 if not commit_message:
                     print("Warning: Empty commit message, skipping commits.")
                     return 1
                 with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tmp:
                     tmp.write(commit_message)
                     commit_message_file = tmp.name
-            elif subprocess.run(
-                ["git", "-C", repo_root, "commit", "-a", "-F", commit_message_file]
+            elif run_command(
+                ["git", "-C", repo_root, "commit", "-a", "-F", commit_message_file],
+                check=False,
             ).returncode != 0:
                 return 1
     finally:
@@ -641,7 +619,7 @@ def runGitOperation(command, repo_roots):
     return 0
 
 
-def loadConfig(path):
+def load_config(path):
     """Load and validate persistent command defaults."""
     try:
         with open(path, "rb") as config_file:
@@ -661,7 +639,7 @@ def loadConfig(path):
     return config
 
 
-def runProjectCommands(command, projects, workspace, jobs):
+def run_project_commands(command, projects, workspace, jobs):
     """Run a maintenance command for each selected project."""
     target = {"build": None, "unit-test": "unit_test", "clean": "clean"}[command]
     commands = []
@@ -677,14 +655,14 @@ def runProjectCommands(command, projects, workspace, jobs):
     def run(entry):
         argv, cwd = entry
         print("Running " + " ".join(argv), flush=True)
-        return subprocess.run(argv, cwd=cwd).returncode
+        return run_command(argv, cwd=cwd, check=False).returncode
 
     workers = jobs if command == "build" else 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         return 1 if any(pool.map(run, commands)) else 0
 
 
-def parseArguments():
+def parse_arguments():
     parser = argparse.ArgumentParser(description="Synchronize shared modules and maintain their projects.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="TOML config file (default: %(default)s).")
     parser.add_argument("--workspace", help="Override the workspace from the config file.")
@@ -741,15 +719,12 @@ def parseArguments():
 
 
 def main():
-    # Parse --config first because it supplies defaults used by all commands.
-    bootstrap = argparse.ArgumentParser(add_help=False)
-    bootstrap.add_argument("--config", default=str(DEFAULT_CONFIG))
-    bootstrap_options, _ = bootstrap.parse_known_args()
+    options = parse_arguments()
     try:
-        config = loadConfig(bootstrap_options.config)
+        config = load_config(options.config)
     except RuntimeError as exc:
-        bootstrap.error(str(exc))
-    options = parseArguments()
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     workspace = options.workspace or config["workspace"]
     if not os.path.isabs(workspace):
         workspace = os.path.abspath(os.path.join(os.path.dirname(options.config), workspace))
@@ -761,23 +736,23 @@ def main():
                 raise RuntimeError("Specify PROJECT, --list, or --all.")
             if options.project and (options.list or options.all):
                 raise RuntimeError("PROJECT, --list, and --all are mutually exclusive.")
-            runCloneCommand(options, workspace)
+            run_clone_command(options, workspace)
             return 0
         if options.command == "new":
-            runNewCommand(options, workspace)
+            run_new_command(options, workspace)
             return 0
-        projects = getProjects(workspace, config["extensions"], config["exclude"])
+        projects = get_projects(workspace, config["extensions"], config["exclude"])
         project_paths = [os.path.join(workspace, project) for project in projects]
         if options.command in ("build", "unit-test", "clean"):
             projects = [
                 project for project in projects
                 if os.path.isfile(os.path.join(workspace, project, "Makefile"))
             ]
-            return runProjectCommands(options.command, projects, workspace, jobs)
-        if options.command in ("commit", "pull", "push", "git-diff", "git-status"):
-            repo_roots = getRepositoryRoots(project_paths)
-        if options.command in ("commit", "pull", "push", "git-diff", "git-status"):
-            return runGitOperation(options.command, repo_roots)
+            return run_project_commands(options.command, projects, workspace, jobs)
+        git_commands = ("commit", "pull", "push", "git-diff", "git-status")
+        if options.command in git_commands:
+            repo_roots = get_repository_roots(project_paths)
+            return run_git_operation(options.command, repo_roots)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -791,7 +766,7 @@ def main():
         no_git_check=getattr(options, "no_git_check", False) or options.command == "status",
         verbose=options.verbose,
     )
-    return runSyncOperation(operation)
+    return run_sync_operation(operation)
 
 
 

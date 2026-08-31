@@ -42,9 +42,3 @@ install_link() {
 }
 
 install_link "$parent_dir/sync_modules.py" "$repo_name/sync_modules.py"
-
-obsolete_link="$parent_dir/git_clone.sh"
-if [ -L "$obsolete_link" ] && [ "$(readlink "$obsolete_link")" = "$repo_name/git_clone.py" ]; then
-    rm "$obsolete_link"
-    echo "Removed obsolete $obsolete_link"
-fi

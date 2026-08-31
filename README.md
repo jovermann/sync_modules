@@ -22,8 +22,8 @@ This tool was developed with the help of codex.
 
 ## Commands
 
-Run commands from any directory. The default configuration discovers projects
-in the parent workspace:
+Run commands from any directory. The workspace is read from the default
+configuration file:
 
 ```sh
 sync_modules.py status

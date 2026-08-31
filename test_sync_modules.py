@@ -21,7 +21,7 @@ class ConfigTests(unittest.TestCase):
                 'exclude = ["old", "keep"]\n'
             )
             config_file.flush()
-            config = sync_modules.loadConfig(config_file.name)
+            config = sync_modules.load_config(config_file.name)
         self.assertEqual(config["workspace"], "github")
         self.assertIn("old", config["exclude"])
         self.assertIn("py", config["extensions"])
@@ -35,30 +35,30 @@ class ConfigTests(unittest.TestCase):
             )
             config_file.flush()
             with self.assertRaisesRegex(RuntimeError, "exclude"):
-                sync_modules.loadConfig(config_file.name)
+                sync_modules.load_config(config_file.name)
 
 
 class CommandTests(unittest.TestCase):
     def test_git_status_uses_precomputed_repository_roots(self):
         completed = argparse.Namespace(returncode=0)
-        with mock.patch.object(sync_modules.subprocess, "run", return_value=completed) as run:
+        with mock.patch.object(sync_modules, "run_command", return_value=completed) as run:
             self.assertEqual(
-                sync_modules.runGitOperation("git-status", ["/repo/one"]),
+                sync_modules.run_git_operation("git-status", ["/repo/one"]),
                 0,
             )
         run.assert_called_once_with([
             "git", "-C", "/repo/one", "status", "--short", "--branch",
             "--untracked-files=no",
-        ])
+        ], check=False)
 
     def test_git_status_propagates_failure(self):
         completed = argparse.Namespace(returncode=1)
-        with mock.patch.object(sync_modules.subprocess, "run", return_value=completed):
-            self.assertEqual(sync_modules.runGitOperation("git-status", ["/repo"]), 1)
+        with mock.patch.object(sync_modules, "run_command", return_value=completed):
+            self.assertEqual(sync_modules.run_git_operation("git-status", ["/repo"]), 1)
 
     def test_unknown_git_operation_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "Unsupported Git operation"):
-            sync_modules.runGitOperation("unknown", [])
+            sync_modules.run_git_operation("unknown", [])
 
     def test_main_passes_scanned_projects_directly_to_git_operation(self):
         options = argparse.Namespace(
@@ -69,11 +69,11 @@ class CommandTests(unittest.TestCase):
             "extensions": ["py"], "exclude": ["old"],
         }
         with (
-            mock.patch.object(sync_modules, "loadConfig", return_value=config),
-            mock.patch.object(sync_modules, "parseArguments", return_value=options),
-            mock.patch.object(sync_modules, "getProjects", return_value=["one", "two"]) as discover,
-            mock.patch.object(sync_modules, "getRepositoryRoots", return_value=["/repo/one", "/repo/two"]) as roots,
-            mock.patch.object(sync_modules, "runGitOperation", return_value=0) as git_operation,
+            mock.patch.object(sync_modules, "load_config", return_value=config),
+            mock.patch.object(sync_modules, "parse_arguments", return_value=options),
+            mock.patch.object(sync_modules, "get_projects", return_value=["one", "two"]) as discover,
+            mock.patch.object(sync_modules, "get_repository_roots", return_value=["/repo/one", "/repo/two"]) as roots,
+            mock.patch.object(sync_modules, "run_git_operation", return_value=0) as git_operation,
         ):
             self.assertEqual(sync_modules.main(), 0)
         discover.assert_called_once_with("/workspace", ["py"], ["old"])
@@ -81,30 +81,30 @@ class CommandTests(unittest.TestCase):
         git_operation.assert_called_once_with("pull", ["/repo/one", "/repo/two"])
 
     def test_parse_github_remote_and_rewrite_project(self):
-        remote = sync_modules.parseGithubRemote("git@github.com:owner/source.git")
+        remote = sync_modules.parse_github_remote("git@github.com:owner/source.git")
         self.assertEqual(remote.owner, "owner")
         self.assertEqual(
-            remote.urlForProject("target"),
+            remote.url_for_project("target"),
             "git@github.com:owner/target.git",
         )
 
     def test_clone_skips_existing_project(self):
         remote = sync_modules.Remote(
-            "https://github.com/owner/source.git", "github.com", "owner", "source"
+            "https://github.com/owner/source.git", "owner", "source"
         )
         with tempfile.TemporaryDirectory() as workspace:
             Path(workspace, "target").mkdir()
-            with mock.patch.object(sync_modules, "runCommand") as run:
-                sync_modules.cloneProject(remote, "target", workspace)
+            with mock.patch.object(sync_modules, "run_command") as run:
+                sync_modules.clone_project(remote, "target", workspace)
             run.assert_not_called()
 
     def test_clone_rejects_path_as_project_name(self):
         remote = sync_modules.Remote(
-            "https://github.com/owner/source.git", "github.com", "owner", "source"
+            "https://github.com/owner/source.git", "owner", "source"
         )
         with tempfile.TemporaryDirectory() as workspace:
             with self.assertRaisesRegex(RuntimeError, "must not contain '/'"):
-                sync_modules.cloneProject(remote, "../target", workspace)
+                sync_modules.clone_project(remote, "../target", workspace)
 
     def test_clone_rejects_project_combined_with_list(self):
         options = argparse.Namespace(
@@ -116,9 +116,9 @@ class CommandTests(unittest.TestCase):
             "extensions": ["py"], "exclude": [],
         }
         with (
-            mock.patch.object(sync_modules, "loadConfig", return_value=config),
-            mock.patch.object(sync_modules, "parseArguments", return_value=options),
-            mock.patch.object(sync_modules, "runCloneCommand") as clone,
+            mock.patch.object(sync_modules, "load_config", return_value=config),
+            mock.patch.object(sync_modules, "parse_arguments", return_value=options),
+            mock.patch.object(sync_modules, "run_clone_command") as clone,
         ):
             self.assertEqual(sync_modules.main(), 1)
         clone.assert_not_called()
@@ -133,8 +133,8 @@ class CommandTests(unittest.TestCase):
             team=None, template=None,
         )
         with tempfile.TemporaryDirectory() as workspace:
-            with mock.patch.object(sync_modules, "runCommand") as run:
-                sync_modules.runNewCommand(options, workspace)
+            with mock.patch.object(sync_modules, "run_command") as run:
+                sync_modules.run_new_command(options, workspace)
             self.assertEqual(run.call_count, 3)
             self.assertEqual(
                 run.call_args_list[0].args[0],
@@ -143,11 +143,12 @@ class CommandTests(unittest.TestCase):
 
     def test_project_command_propagates_failure(self):
         completed = argparse.Namespace(returncode=2)
-        with mock.patch.object(sync_modules.subprocess, "run", return_value=completed) as run:
-            result = sync_modules.runProjectCommands("clean", ["one"], "/workspace", 3)
+        with mock.patch.object(sync_modules, "run_command", return_value=completed) as run:
+            result = sync_modules.run_project_commands("clean", ["one"], "/workspace", 3)
         self.assertEqual(result, 1)
         run.assert_called_once_with(
-            ["make", "-j", "3", "-C", "/workspace/one", "clean"], cwd="/workspace"
+            ["make", "-j", "3", "-C", "/workspace/one", "clean"],
+            cwd="/workspace", check=False,
         )
 
     def test_parallel_make_is_only_used_for_build(self):
@@ -155,7 +156,7 @@ class CommandTests(unittest.TestCase):
             sync_modules.concurrent.futures, "ThreadPoolExecutor"
         ) as executor:
             executor.return_value.__enter__.return_value.map.return_value = []
-            sync_modules.runProjectCommands("unit-test", ["one", "two"], "/workspace", 8)
+            sync_modules.run_project_commands("unit-test", ["one", "two"], "/workspace", 8)
         executor.assert_called_once_with(max_workers=1)
 
     def test_project_discovery_supports_all_extensions_and_exclusions(self):
@@ -169,7 +170,7 @@ class CommandTests(unittest.TestCase):
             Path(workspace, "old").mkdir()
             Path(workspace, "old", "module.py").touch()
             self.assertEqual(
-                sync_modules.getProjects(workspace, ["cpp", "py"], ["old"]),
+                sync_modules.get_projects(workspace, ["cpp", "py"], ["old"]),
                 ["cpp", "python"],
             )
 
