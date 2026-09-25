@@ -1,2 +1,3 @@
 .dirdb
 *~
+__pycache__/

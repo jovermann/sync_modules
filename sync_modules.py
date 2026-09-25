@@ -660,7 +660,10 @@ def run_project_commands(command, projects, workspace, jobs):
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="Synchronize shared modules and maintain their projects.")
+    parser = argparse.ArgumentParser(
+        description="Synchronize shared modules and maintain their projects.",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="TOML config file (default: %(default)s).")
     parser.add_argument("--workspace", help="Override the workspace from the config file.")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity.")
@@ -712,6 +715,16 @@ def parse_arguments():
     new_parser.add_argument("--remote", help="Remote name for the clone.")
     new_parser.add_argument("--team", help="Organization team to grant access.")
     new_parser.add_argument("-t", "--template", help="Template repository.")
+    for command in subparsers._choices_actions:
+        command_parser = subparsers.choices[command.dest]
+        formatter = command_parser._get_formatter()
+        arguments = [
+            f"{formatter._format_action_invocation(action):<30} {action.help or ''}".rstrip()
+            for action in command_parser._actions
+            if not isinstance(action, argparse._HelpAction)
+        ]
+        if arguments:
+            command.help += "\n" + "\n".join(arguments)
     return parser.parse_args()
 
 
