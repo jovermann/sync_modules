@@ -25,6 +25,20 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = Path.home() / ".sync_modules.toml"
+DEFAULT_CONFIG_CONTENT = '''workspace = "github"
+jobs = 0
+
+extensions = ["c", "h", "cpp", "hpp", "cxx", "hxx", "py", "sh"]
+
+exclude = [
+    "streplace_0.9",
+    "old",
+    "other",
+    "test_basic.py",
+    "keep",
+    ".venv",
+]
+'''
 
 # Load the local copy explicitly, avoiding a similarly named third-party
 # package from the Python environment. sync_modules.py keeps this copy in sync
@@ -618,6 +632,17 @@ def run_git_operation(command, repo_roots):
 
 def load_config(path):
     """Load and validate persistent command defaults."""
+    path = Path(path)
+    if path == DEFAULT_CONFIG and not path.exists():
+        try:
+            with path.open("x", encoding="utf-8") as config_file:
+                config_file.write(DEFAULT_CONFIG_CONTENT)
+            print(f"Created default config '{path}'.", file=sys.stderr)
+        except FileExistsError:
+            # Another invocation created it after the existence check.
+            pass
+        except OSError as exc:
+            raise RuntimeError(f"Cannot create default config '{path}': {exc}") from exc
     try:
         with open(path, "rb") as config_file:
             config = toml.load(config_file)

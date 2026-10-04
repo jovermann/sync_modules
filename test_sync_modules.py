@@ -16,6 +16,26 @@ SPEC.loader.exec_module(sync_modules)
 
 
 class ConfigTests(unittest.TestCase):
+    def test_missing_default_config_is_created(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, ".sync_modules.toml")
+            with mock.patch.object(sync_modules, "DEFAULT_CONFIG", config_path):
+                config = sync_modules.load_config(config_path)
+            self.assertEqual(config["workspace"], "github")
+            self.assertEqual(config["jobs"], 0)
+            self.assertIn("cpp", config["extensions"])
+            self.assertIn(".venv", config["exclude"])
+            self.assertEqual(
+                config_path.read_text(), sync_modules.DEFAULT_CONFIG_CONTENT
+            )
+
+    def test_missing_custom_config_is_not_created(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "custom.toml")
+            with self.assertRaisesRegex(RuntimeError, "Cannot load config"):
+                sync_modules.load_config(config_path)
+            self.assertFalse(config_path.exists())
+
     def test_default_config_is_valid(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml") as config_file:
             config_file.write(

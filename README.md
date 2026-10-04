@@ -47,8 +47,9 @@ Local maintenance commands operate on projects discovered from the configured
 workspace. `clone` and `new` accept remote repository names. Use `--workspace`
 to temporarily override the workspace.
 
-Persistent settings are in `~/.sync_modules.toml`. It defines the workspace,
-parallel job count, source extensions, and exclusions used by every command.
+Persistent settings are in `~/.sync_modules.toml`. On first use, the file is
+created automatically with useful defaults. It defines the workspace, parallel
+job count, source extensions, and exclusions used by every command.
 Projects containing a configured source extension are discovered automatically.
 A `jobs` value of `0` uses the available CPU count. Use `--config` to select a
 different configuration file.
