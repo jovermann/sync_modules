@@ -35,6 +35,7 @@ sync_modules.py pull
 sync_modules.py push
 sync_modules.py git-diff
 sync_modules.py clone PROJECT
+sync_modules.py list
 sync_modules.py clone --list
 sync_modules.py clone --all
 sync_modules.py new PROJECT
@@ -107,5 +108,8 @@ an existing workspace clone:
 sync_modules.py clone project_name
 ```
 
-Use `clone --list` to list repositories for the inferred owner and
+Use `list` (or the equivalent `clone --list`) to list repositories for the
+inferred owner, whether each repository is available locally, and the branch,
+upstream/divergence, and modification state reported by Git for local clones.
+Untracked files are ignored when determining the modification state.
 `clone --all` to clone every repository that is not already present locally.

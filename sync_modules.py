@@ -161,6 +161,51 @@ def list_remote_projects(remote):
     return sorted(name for name in result.stdout.splitlines() if name)
 
 
+def get_local_project_info(project_dir):
+    """Describe whether a project exists locally and, if so, its Git state."""
+    project_dir = Path(project_dir)
+    if not project_dir.exists():
+        return "no", "-"
+    if not project_dir.is_dir():
+        return "file", "-"
+    result = run_command(
+        ["git", "-C", project_dir, "status", "--short", "--branch", "--untracked-files=no"],
+        capture=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return "yes", "not a Git repository"
+    lines = result.stdout.splitlines()
+    branch = lines[0].removeprefix("## ") if lines else "unknown branch"
+    if len(lines) > 1:
+        branch += "; modified"
+    return "yes", branch
+
+
+def print_project_list(projects, work_dir):
+    """Print remote projects with local availability and Git information."""
+    rows = [
+        (project, *get_local_project_info(Path(work_dir) / project))
+        for project in projects
+    ]
+    widths = [
+        max(len(heading), *(len(row[index]) for row in rows))
+        for index, heading in enumerate(("REPOSITORY", "LOCAL", "GIT"))
+    ]
+    print(f"{'REPOSITORY':<{widths[0]}}  {'LOCAL':<{widths[1]}}  GIT")
+    for project, local, git_info in rows:
+        print(f"{project:<{widths[0]}}  {local:<{widths[1]}}  {git_info}")
+
+
+def run_list_command(default_workspace):
+    """List sibling GitHub repositories and their local state."""
+    work_dir = Path(default_workspace).resolve()
+    remote = find_remote(work_dir)
+    if remote is None:
+        raise RuntimeError(f"Found no GitHub remote in '{work_dir}' or its direct subdirectories.")
+    print_project_list(list_remote_projects(remote), work_dir)
+
+
 def clone_project(remote, project, work_dir):
     """Clone one project unless its target already exists."""
     validate_project_name(project, allow_owner=False)
@@ -181,8 +226,7 @@ def run_clone_command(options, default_workspace):
         raise RuntimeError(f"Found no GitHub remote in '{work_dir}' or its direct subdirectories.")
     projects = list_remote_projects(remote) if options.list or options.all else []
     if options.list:
-        for project in projects:
-            print(project)
+        print_project_list(projects, work_dir)
     if options.all:
         for project in projects:
             clone_project(remote, project, work_dir)
@@ -719,6 +763,12 @@ def parse_arguments():
     clone_mode.add_argument("-l", "--list", action="store_true", help="List repositories for the inferred owner.")
     clone_mode.add_argument("-a", "--all", action="store_true", help="Clone all repositories not available locally.")
 
+    subparsers.add_parser(
+        "list",
+        help="List sibling GitHub repositories and their local state.",
+        description="List sibling GitHub repositories and their local state.",
+    )
+
     new_parser = subparsers.add_parser("new", help="Create and clone a new GitHub repository.")
     new_parser.add_argument("project", help="Repository name, or OWNER/REPO.")
     new_parser.add_argument("-n", "--dry-run", action="store_true", help="Print commands without making changes.")
@@ -770,6 +820,9 @@ def run_workspace_command(options, config, workspace):
         if options.project and (options.list or options.all):
             raise RuntimeError("PROJECT, --list, and --all are mutually exclusive.")
         run_clone_command(options, workspace)
+        return 0
+    if options.command == "list":
+        run_list_command(workspace)
         return 0
     if options.command == "new":
         run_new_command(options, workspace)

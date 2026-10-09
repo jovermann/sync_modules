@@ -4,6 +4,7 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -155,6 +156,66 @@ class CommandTests(unittest.TestCase):
         ):
             self.assertEqual(sync_modules.main(), 1)
         clone.assert_not_called()
+
+    def test_project_list_includes_local_git_state(self):
+        clean = argparse.Namespace(returncode=0, stdout="## main...origin/main\n")
+        modified = argparse.Namespace(
+            returncode=0, stdout="## topic...origin/topic [ahead 1]\n M file.py\n"
+        )
+        with tempfile.TemporaryDirectory() as workspace:
+            Path(workspace, "clean", ".git").mkdir(parents=True)
+            Path(workspace, "modified", ".git").mkdir(parents=True)
+
+            def status(args, **kwargs):
+                return modified if Path(args[2]).name == "modified" else clean
+
+            with mock.patch.object(sync_modules, "run_command", side_effect=status):
+                sync_modules.print_project_list(
+                    ["clean", "modified", "remote-only"], workspace
+                )
+        output = self.stdout.getvalue()
+        self.assertIn("REPOSITORY", output)
+        self.assertRegex(output, r"clean\s+yes\s+main\.\.\.origin/main")
+        self.assertRegex(
+            output,
+            r"modified\s+yes\s+topic\.\.\.origin/topic \[ahead 1\]; modified",
+        )
+        self.assertRegex(output, r"remote-only\s+no\s+-")
+
+    def test_local_project_info_ignores_untracked_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            tracked = Path(directory, "tracked.txt")
+            tracked.write_text("original\n")
+            subprocess.run(["git", "-C", directory, "add", "tracked.txt"], check=True)
+            subprocess.run(
+                ["git", "-C", directory, "-c", "user.name=Test", "-c",
+                 "user.email=test@example.invalid", "commit", "-qm", "initial"],
+                check=True,
+            )
+            Path(directory, "untracked.txt").write_text("new\n")
+            local, info = sync_modules.get_local_project_info(directory)
+            self.assertEqual(local, "yes")
+            self.assertNotIn("modified", info)
+
+            tracked.write_text("changed\n")
+            _, info = sync_modules.get_local_project_info(directory)
+            self.assertIn("modified", info)
+
+    def test_list_command_uses_same_remote_listing_as_clone_list(self):
+        remote = sync_modules.Remote(
+            "https://github.com/owner/source.git", "owner", "source"
+        )
+        with (
+            mock.patch.object(sync_modules, "find_remote", return_value=remote),
+            mock.patch.object(
+                sync_modules, "list_remote_projects", return_value=["one"]
+            ) as list_remote,
+            mock.patch.object(sync_modules, "print_project_list") as print_list,
+        ):
+            sync_modules.run_list_command("/workspace")
+        list_remote.assert_called_once_with(remote)
+        print_list.assert_called_once_with(["one"], Path("/workspace"))
 
     def test_new_dry_run_configures_upstream(self):
         options = argparse.Namespace(
